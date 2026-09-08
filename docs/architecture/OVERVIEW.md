@@ -2,7 +2,18 @@
 
 ## Current stage
 
-`week01-scaffold` — repository and process only. No retrieval agent yet.
+`week01-schema-ingest` — legal document/chunk schemas + structure-aware chunker v0 + fixture ingest.
+
+### Done in this stage
+- `sag_legal.models.LegalDocument` / `LegalChunk` with provenance + temporal fields
+- Regex structure-aware splitter: Điều → Khoản → Điểm
+- `ingest_document` / `ingest_text_file` over synthetic fixtures (not official law text)
+- Demo: `python scripts/demo_ingest.py`
+
+### Explicitly not done yet
+- Real crawlers / official corpus
+- BM25 / dense / hybrid retrieval
+- Voyage, SAG, Hindsight, Q&A agent
 
 ## Target pipeline
 
