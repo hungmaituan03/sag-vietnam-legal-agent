@@ -1,0 +1,30 @@
+# Default experiment / runtime knobs (no secrets).
+# Copy or override per experiment; record the file path in your weekly report.
+
+project:
+  name: sag-legal
+  stage: week01-scaffold
+
+retrieval:
+  bm25_top_k: 50
+  dense_top_k: 50
+  hybrid_fusion: rrf
+  hybrid_top_n_before_rerank: 100
+
+reranker:
+  provider: voyage
+  model: rerank-2.5
+  top_k: 20
+
+sag:
+  mode: multi-hop  # vector | atomic | multi-hop
+  enabled: false   # turn on in Week 4
+
+hindsight:
+  enabled: false   # mandatory before user-facing answers (Week 4+)
+  method: critique_and_revise  # or second_llm | citation_match_plus_llm
+  max_revisions: 1
+
+generation:
+  temperature: 0.0
+  # model: set in .env / provider config — do not hard-code keys

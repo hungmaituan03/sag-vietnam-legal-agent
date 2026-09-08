@@ -1,0 +1,58 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+credentials*.json
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Data: keep structure, ignore bulky/private dumps by default
+data/raw/**
+!data/raw/.gitkeep
+!data/raw/README.md
+data/processed/**
+!data/processed/.gitkeep
+!data/processed/README.md
+
+# Local experiment outputs
+artifacts/
+runs/
+logs/
+*.log
+
+# Model / vector store local files
+*.lance
+*.sqlite
+*.db
