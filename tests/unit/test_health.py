@@ -9,4 +9,4 @@ def test_version_present():
 def test_healthcheck():
     payload = healthcheck()
     assert payload["status"] == "ok"
-    assert payload["stage"] == "week01-scaffold"
+    assert payload["stage"] == "week01-schema-ingest"

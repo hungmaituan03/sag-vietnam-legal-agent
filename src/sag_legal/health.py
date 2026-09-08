@@ -10,5 +10,5 @@ def healthcheck() -> dict[str, str]:
         "status": "ok",
         "package": "sag-legal",
         "version": __version__,
-        "stage": "week01-scaffold",
+        "stage": "week01-schema-ingest",
     }
