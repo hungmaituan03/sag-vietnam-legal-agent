@@ -1,7 +1,10 @@
-from dataclasses import dataclass
-from sag_legal.models import LegalChunk
 import re
+from dataclasses import dataclass
+
 from rank_bm25 import BM25Okapi
+
+from sag_legal.models import LegalChunk
+
 
 @dataclass
 class ScoreChunk:
@@ -9,17 +12,20 @@ class ScoreChunk:
     score: float
 
 def search_bm25(query: str, chunks: list[LegalChunk], k: int = 5,) -> list[ScoreChunk]:
-    if not chunks: return []
+    if not chunks: 
+        return []
     k = max(0,k)
-    if k == 0: return []
+    if k == 0: 
+        return []
     tokenized_corpus = [tokenize(chunk.text) for chunk in chunks]
     tokenized_query = tokenize(query)
-    if not tokenized_query: return []
+    if not tokenized_query: 
+        return []
     bm25 = BM25Okapi(tokenized_corpus)
     scores = bm25.get_scores(tokenized_query)
     paired = [ 
         ScoreChunk(chunk=chunk, score=float(score))
-        for chunk, score in zip(chunks, scores)
+        for chunk, score in zip(chunks, scores, strict=True)
     ]
     paired.sort(key=lambda x: x.score, reverse=True)
     return paired[:k]
