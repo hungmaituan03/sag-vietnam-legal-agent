@@ -1,10 +1,9 @@
 from datetime import date
 from pathlib import Path
 
-from sag_legal.ingestion import ingest_document, ingest_text_file
-from sag_legal.retrieval.bm25 import search_bm25, tokenize
+from sag_legal.ingestion import ingest_text_file
 from sag_legal.models import DocumentStatus, DocumentType, LegalDocument
-
+from sag_legal.retrieval.bm25 import search_bm25, tokenize
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
