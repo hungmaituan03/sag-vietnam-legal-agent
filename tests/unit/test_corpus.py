@@ -11,11 +11,13 @@ from pathlib import Path
 import pytest
 
 from sag_legal.ingestion.corpus import (
+    flatten_chunks,
     ingest_corpus,
     parse_effective_date,
     row_to_document,
 )
-from sag_legal.models import DocumentStatus, DocumentType
+from sag_legal.models import DocumentStatus, DocumentType, LegalChunk
+from sag_legal.retrieval.bm25 import search_bm25
 
 # --- parse_effective_date -------------------------------------------------
 
@@ -211,3 +213,57 @@ def test_ingest_corpus_missing_id_raises(tmp_path: Path):
 def test_ingest_corpus_missing_file_raises(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         ingest_corpus(tmp_path / "no-such.json", doc_ids=("mini-tctd",))
+
+
+# --- flatten_chunks -------------------------------------------------------
+
+
+_MINI_ROWS = [
+    {
+        "id": "mini-tctd",
+        "title": "Luật mẫu TCTD",
+        "type": "law",
+        "content": (
+            "Điều 1. Phạm vi\n"
+            "Luật này quy định về tổ chức tín dụng.\n"
+            "Điều 2. Giấy phép\n"
+            "1. Điều kiện cấp giấy phép.\n"
+            "a) Nhận tiền gửi.\n"
+            "Luật này có hiệu lực thi hành từ ngày 01 tháng 01 năm 2011.\n"
+        ),
+    },
+    {
+        "id": "mini-other",
+        "title": "Luật mẫu khác",
+        "type": "law",
+        "content": "Điều 3. Không liên quan.\n",
+    },
+]
+
+
+def test_flatten_chunks_empty():
+    assert flatten_chunks([]) == []
+
+
+def test_flatten_chunks_concatenates_in_result_order(tmp_path: Path):
+    corpus = _write_mini_corpus(tmp_path / "mini.json", _MINI_ROWS)
+    results = ingest_corpus(corpus, doc_ids=("mini-tctd", "mini-other"))
+    flat = flatten_chunks(results)
+
+    expected_len = sum(len(r.chunks) for r in results)
+    assert len(flat) == expected_len
+    assert all(isinstance(c, LegalChunk) for c in flat)
+    assert [c.document_id for c in flat] == (
+        ["mini-tctd"] * len(results[0].chunks)
+        + ["mini-other"] * len(results[1].chunks)
+    )
+
+
+def test_search_bm25_on_flattened_mini_corpus(tmp_path: Path):
+    corpus = _write_mini_corpus(tmp_path / "mini.json", _MINI_ROWS)
+    chunks = flatten_chunks(ingest_corpus(corpus, doc_ids=("mini-tctd", "mini-other")))
+    hits = search_bm25("cấp giấy phép", chunks, k=3)
+
+    assert hits
+    assert hits[0].score >= hits[-1].score
+    assert "giấy phép" in hits[0].chunk.text.lower()

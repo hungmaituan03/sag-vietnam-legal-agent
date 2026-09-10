@@ -11,7 +11,13 @@ from datetime import date
 from pathlib import Path
 
 from sag_legal.ingestion.pipeline import ingest_document
-from sag_legal.models import DocumentStatus, DocumentType, IngestResult, LegalDocument
+from sag_legal.models import (
+    DocumentStatus,
+    DocumentType,
+    IngestResult,
+    LegalChunk,
+    LegalDocument,
+)
 
 """ Applicable laws for demos only, delete later """
 FINANCE_DOC_IDS = (
@@ -117,3 +123,9 @@ def ingest_corpus(
         document = row_to_document(by_id[doc_id])
         results.append(ingest_document(document))
     return results
+
+def flatten_chunks(results: list[IngestResult]) -> list[LegalChunk]:
+    chunks: list[LegalChunk] = []
+    for result in results:
+        chunks.extend(result.chunks)
+    return chunks
