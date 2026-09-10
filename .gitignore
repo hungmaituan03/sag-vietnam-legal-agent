@@ -51,6 +51,7 @@ artifacts/
 runs/
 logs/
 *.log
+.cursor/
 
 # Model / vector store local files
 *.lance
