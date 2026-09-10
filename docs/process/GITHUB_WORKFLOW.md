@@ -13,15 +13,20 @@ This internship is graded on **visible process**, not only a final demo. GitHub 
 ## Branch model (simple)
 
 ```text
-main              ← always green; protected once remote exists
-└── week01/...    ← example: week01/scaffold, week01/bm25-baseline
-└── week02/...
+main                 ← always green; protected
+├── bm25-baseline    ← short kebab name (preferred)
+├── dense-baseline
+├── hybrid-fusion
+└── voyage-rerank
 ```
+
+Week number lives in the **weekly milestone issue**, not in the branch name.
 
 Rules:
 1. Do **not** push broken `main`. Prefer PRs.
 2. One focused concern per PR when possible (ingestion ≠ retrieval).
-3. PR description must say **what / why / how to test / known limits**.
+3. PR description must say **what / why / how to test / known limits / process**.
+4. Before push: `ruff check src tests && pytest -q` (commit lint fixes before push).
 
 ## What “process” looks like in the history
 
@@ -42,13 +47,13 @@ Every Monday (or first day of the week), open an issue from the **Weekly milesto
 
 ## CI
 
-GitHub Actions runs on every push/PR:
+GitHub Actions runs on every push **and** every PR (same job twice):
 
 - install package
-- `ruff` lint
+- `ruff check src tests`
 - `pytest`
 
-A red CI is feedback, not shame — fix it in the same PR.
+Two red checks usually mean **one** failure, not two bugs. A red CI is feedback — fix it in the same PR before merge.
 
 ## Secrets
 
