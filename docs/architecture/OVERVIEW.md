@@ -2,18 +2,28 @@
 
 ## Current stage
 
-`week01-schema-ingest` — legal document/chunk schemas + structure-aware chunker v0 + fixture ingest.
+`sag-v0` — the retrieval spine runs end to end on the approved corpus, and SAG
+expands the reranked shortlist.
 
-### Done in this stage
-- `sag_legal.models.LegalDocument` / `LegalChunk` with provenance + temporal fields
+### Done
+- `LegalDocument` / `LegalChunk` with provenance + temporal fields
 - Regex structure-aware splitter: Điều → Khoản → Điểm
-- `ingest_document` / `ingest_text_file` over synthetic fixtures (not official law text)
-- Demo: `python scripts/demo_ingest.py`
+- `ingestion.corpus`: approved JSON → documents, `effective_date` from force
+  clauses, finance pack selection, `flatten_chunks`
+- BM25, dense, hybrid RRF (fuses ranks, not scores)
+- Voyage `rerank-2.5`, live, injectable client for CI
+- `retrieval.embeddings`: corpus vectors encoded once and cached on disk
+- `sag.index`: event/entity index, structural + semantic edges, bounded
+  multi-hop expansion
+- Demos: `scripts/run_finance_retrieval.py`, `scripts/run_sag_evidence.py`
+
+Results and limitations: `docs/experiments/SAG_REPORT.md`.
 
 ### Explicitly not done yet
-- Real crawlers / official corpus
-- BM25 / dense / hybrid retrieval
-- Voyage, SAG, Hindsight, Q&A agent
+- LLM entity extraction, MySQL, Elasticsearch (dicts + numpy for now)
+- LLM draft generation, Hindsight, citation validation
+- Temporal filtering during expansion
+- Real crawlers (the corpus is a fixed approved dump)
 
 ## Target pipeline
 
@@ -36,9 +46,9 @@ User Query
 |---------|----------------|
 | `ingestion` | Fetch/normalize legal docs + provenance |
 | `chunking` | Structure-aware Điều/Khoản/Điểm chunks |
-| `retrieval` | BM25, dense, hybrid fusion |
+| `retrieval` | BM25, dense, hybrid fusion, cached corpus embeddings |
 | `reranking` | Voyage client |
-| `sag` | Event–entity index + hyperedge queries |
+| `sag` | Event–entity index + hyperedge expansion |
 | `hindsight` | Self-verification before user sees answer |
 | `generation` | Draft answer from evidence |
 | `citation` | Format/validate citations |
