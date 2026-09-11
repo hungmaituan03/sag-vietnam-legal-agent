@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Run hybrid → Voyage → SAG on the approved finance JSON (live, not a smoke pack).
+"""Run hybrid → Voyage → SAG (+ optional LLM draft) on the finance JSON.
 
 Requires:
   - data/raw/uts_vlc_processed.json
   - VOYAGE_API_KEY in .env (real rerank; no fake client)
   - sentence-transformers (dense stage uses the multilingual MiniLM)
-  - QWEN_API_KEY in .env when using --qwen / --qwen-all
+  - QWEN_API_KEY in .env when using --qwen / --qwen-all / --answer
 
 Usage (repo root, venv on):
   python scripts/run_finance_retrieval.py
   python scripts/run_finance_retrieval.py --query "kỳ kế toán năm" --qwen
-  python scripts/run_finance_retrieval.py --query "kỳ kế toán năm" --qwen-all
+  python scripts/run_finance_retrieval.py --query "kỳ kế toán năm" --answer
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from sag_legal.generation import generate_draft
 from sag_legal.ingestion import FINANCE_DOC_IDS, flatten_chunks, ingest_corpus
 from sag_legal.models import LegalChunk
 from sag_legal.reranking import rerank
@@ -141,17 +142,27 @@ def main() -> None:
             "cached). Implies --qwen."
         ),
     )
+    parser.add_argument(
+        "--answer",
+        action="store_true",
+        help=(
+            "After SAG (or Voyage with --no-sag), call Qwen to draft a "
+            "Vietnamese answer from the evidence pack."
+        ),
+    )
     args = parser.parse_args()
     use_qwen = args.qwen or args.qwen_all
+    need_qwen = use_qwen or args.answer
 
     settings = get_settings()
     if not settings.voyage_configured:
         raise SystemExit(
             "VOYAGE_API_KEY is not set. Put it in .env at the repo root."
         )
-    if use_qwen and not settings.qwen_configured:
+    if need_qwen and not settings.qwen_configured:
         raise SystemExit(
-            "QWEN_API_KEY is not set. Put it in .env, or drop --qwen / --qwen-all."
+            "QWEN_API_KEY is not set. Put it in .env, or drop "
+            "--qwen / --qwen-all / --answer."
         )
     if not RAW_JSON.is_file():
         raise SystemExit(f"Missing corpus: {RAW_JSON}")
@@ -192,62 +203,89 @@ def main() -> None:
     )
     print_hits("3) VOYAGE (live rerank-2.5)", voyage_hits, titles)
 
+    evidence: list[LegalChunk]
     if args.no_sag:
-        print("\nDone (--no-sag): the Voyage shortlist above is the whole context.")
+        evidence = [hit.chunk for hit in voyage_hits]
+        print("\n(--no-sag): Voyage shortlist is the whole context.")
+    else:
+        concepts: dict[str, list[str]] | None = None
+        if use_qwen:
+            to_extract = (
+                chunks if args.qwen_all else [hit.chunk for hit in hybrid_hits]
+            )
+            print(
+                f"\nQwen extracting {len(to_extract)} chunks "
+                f"(cache: {QWEN_CACHE.name})…",
+                flush=True,
+            )
+            extractions = extract_chunks(to_extract, cache_path=QWEN_CACHE)
+            concepts = concept_keys_by_chunk(extractions)
+            print_extractions(
+                f"3.5) QWEN extract ({settings.qwen_model})",
+                [hit.chunk for hit in voyage_hits],
+                extractions,
+                titles,
+            )
+            concept_entity_count = len(
+                {k for keys in concepts.values() for k in keys}
+            )
+            print(
+                f"\n  concept keys on extracted chunks: "
+                f"{concept_entity_count} unique",
+                flush=True,
+            )
+
+        index = build_index(
+            chunks, vectors=vectors, min_sim=args.min_sim, concepts=concepts
+        )
+        concept_buckets = sum(
+            1 for key in index.events_by_entity if key.startswith("concept::")
+        )
+        print(
+            f"\nSAG index: {len(index.events_by_id)} events, "
+            f"{len(index.events_by_entity)} entities "
+            f"({concept_buckets} concept), "
+            f"{sum(len(v) for v in index.neighbours.values())} semantic edges"
+        )
+
+        seeds = [hit.chunk for hit in voyage_hits]
+        seed_ids = {chunk.chunk_id for chunk in seeds}
+        evidence = expand(
+            seeds,
+            index,
+            max_extra=args.sag_extra,
+            hops=args.hops,
+            min_sim=args.min_sim,
+            use_concepts=use_qwen,
+        )
+        stage = (
+            "4) SAG expansion (+Qwen concepts)" if use_qwen else "4) SAG expansion"
+        )
+        print_context(stage, evidence, seed_ids, titles)
+
+        added = [c for c in evidence if c.chunk_id not in seed_ids]
+        cross = {c.document_id for c in added} - {c.document_id for c in seeds}
+        print(
+            f"\n{len(seeds)} seeds → {len(evidence)} context chunks "
+            f"({len(added)} added)"
+        )
+        print(f"Laws reached only through SAG: {sorted(cross) or 'none'}")
+
+    if not args.answer:
         return
 
-    concepts: dict[str, list[str]] | None = None
-    if use_qwen:
-        to_extract = chunks if args.qwen_all else [hit.chunk for hit in hybrid_hits]
-        print(
-            f"\nQwen extracting {len(to_extract)} chunks "
-            f"(cache: {QWEN_CACHE.name})…",
-            flush=True,
-        )
-        extractions = extract_chunks(to_extract, cache_path=QWEN_CACHE)
-        concepts = concept_keys_by_chunk(extractions)
-        print_extractions(
-            f"3.5) QWEN extract ({settings.qwen_model})",
-            [hit.chunk for hit in voyage_hits],
-            extractions,
-            titles,
-        )
-        concept_entity_count = len({k for keys in concepts.values() for k in keys})
-        print(
-            f"\n  concept keys on extracted chunks: {concept_entity_count} unique",
-            flush=True,
-        )
-
-    index = build_index(
-        chunks, vectors=vectors, min_sim=args.min_sim, concepts=concepts
-    )
-    concept_buckets = sum(
-        1 for key in index.events_by_entity if key.startswith("concept::")
-    )
     print(
-        f"\nSAG index: {len(index.events_by_id)} events, "
-        f"{len(index.events_by_entity)} entities "
-        f"({concept_buckets} concept), "
-        f"{sum(len(v) for v in index.neighbours.values())} semantic edges"
+        f"\n=== 5) LLM DRAFT ({settings.qwen_model}, "
+        f"{len(evidence)} evidence chunks) ===",
+        flush=True,
     )
-
-    seeds = [hit.chunk for hit in voyage_hits]
-    seed_ids = {chunk.chunk_id for chunk in seeds}
-    context = expand(
-        seeds,
-        index,
-        max_extra=args.sag_extra,
-        hops=args.hops,
-        min_sim=args.min_sim,
-        use_concepts=use_qwen,
-    )
-    stage = "4) SAG expansion (+Qwen concepts)" if use_qwen else "4) SAG expansion"
-    print_context(stage, context, seed_ids, titles)
-
-    added = [c for c in context if c.chunk_id not in seed_ids]
-    cross = {c.document_id for c in added} - {c.document_id for c in seeds}
-    print(f"\n{len(seeds)} seeds → {len(context)} context chunks ({len(added)} added)")
-    print(f"Laws reached only through SAG: {sorted(cross) or 'none'}")
+    draft = generate_draft(args.query, evidence)
+    status = "ABSTAINED" if draft.abstained else "ANSWER"
+    print(f"\n[{status}]\n{draft.answer}\n")
+    if draft.cited_chunk_ids:
+        print("Cited chunk_ids:")
+        for cid in draft.cited_chunk_ids:
+            print(f"  - {cid}")
 
 
 if __name__ == "__main__":
