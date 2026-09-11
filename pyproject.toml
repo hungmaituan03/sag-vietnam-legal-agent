@@ -26,9 +26,16 @@ dev = [
   "ruff>=0.6.0",
   "sentence-transformers>=3.0.0",
 ]
+web = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"sag_legal.chat" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

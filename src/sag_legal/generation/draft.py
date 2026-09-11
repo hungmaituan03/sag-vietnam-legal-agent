@@ -10,6 +10,7 @@ CI stays offline via injectable `client=` / `generate_fn=` fakes.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,6 +18,11 @@ from typing import Any
 from sag_legal.models import LegalChunk
 
 GenerateFn = Callable[[str, Sequence[LegalChunk]], "DraftAnswer"]
+
+# Keep prompts under control: SAG can expand to 15+ chunks and the model then
+# truncates JSON or writes overly short answers.
+DEFAULT_MAX_EVIDENCE = 10
+DEFAULT_MAX_CHUNK_CHARS = 600
 
 
 @dataclass
@@ -26,10 +32,104 @@ class DraftAnswer:
     abstained: bool = False
 
 
-def _format_evidence(evidence: Sequence[LegalChunk]) -> str:
+def select_evidence_for_draft(
+    evidence: Sequence[LegalChunk],
+    *,
+    max_chunks: int = DEFAULT_MAX_EVIDENCE,
+    seed_ids: set[str] | None = None,
+) -> list[LegalChunk]:
+    """Pick chunks for the answer LLM.
+
+    Naive ``evidence[:max_chunks]`` drops SAG's most useful adds: same-Điều
+    parents often land *after* headings of other seeds (round-robin expand).
+    Prefer: seeds → repairs for điểm-orphan articles → other same-article
+    extras → everything else.
+    """
+    if max_chunks <= 0:
+        return []
+    items = list(evidence)
+    if len(items) <= max_chunks:
+        return items
+
+    seeds = {sid for sid in (seed_ids or set()) if sid}
+    if not seeds:
+        return items[:max_chunks]
+
+    seed_chunks = [c for c in items if c.chunk_id in seeds]
+    extras = [c for c in items if c.chunk_id not in seeds]
+    seed_articles = {
+        (c.document_id, c.article) for c in seed_chunks if c.article
+    }
+    orphan_articles = {
+        (c.document_id, c.article) for c in seed_chunks if c.point and c.article
+    }
+
+    def article_key(chunk: LegalChunk) -> tuple[str, str] | None:
+        if not chunk.article:
+            return None
+        return (chunk.document_id, chunk.article)
+
+    repair_orphan = [c for c in extras if article_key(c) in orphan_articles]
+    repair_other = [
+        c
+        for c in extras
+        if article_key(c) in seed_articles
+        and article_key(c) not in orphan_articles
+    ]
+    other = [c for c in extras if article_key(c) not in seed_articles]
+
+    def orphan_priority(chunk: LegalChunk) -> tuple[int, int]:
+        key = article_key(chunk)
+        clause_match = any(
+            s.point
+            and s.clause
+            and article_key(s) == key
+            and chunk.clause == s.clause
+            for s in seed_chunks
+        )
+        if clause_match:
+            return (0, 0)
+        is_heading = chunk.clause is None and chunk.point is None
+        has_clause_repair = any(
+            article_key(e) == key and e.clause for e in extras
+        )
+        if is_heading and has_clause_repair:
+            return (1, 0)
+        if is_heading:
+            return (2, 0)
+        return (3, 0)
+
+    repair_orphan = [
+        c
+        for _, c in sorted(
+            enumerate(repair_orphan),
+            key=lambda iv: (*orphan_priority(iv[1]), iv[0]),
+        )
+    ]
+    ordered = seed_chunks + repair_orphan + repair_other + other
+    seen: set[str] = set()
+    out: list[LegalChunk] = []
+    for chunk in ordered:
+        if chunk.chunk_id in seen:
+            continue
+        seen.add(chunk.chunk_id)
+        out.append(chunk)
+        if len(out) >= max_chunks:
+            break
+    return out
+
+
+def _format_evidence(
+    evidence: Sequence[LegalChunk],
+    *,
+    max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
+) -> str:
     blocks: list[str] = []
     for i, chunk in enumerate(evidence, start=1):
         eff = chunk.effective_date.isoformat() if chunk.effective_date else "unknown"
+        text = chunk.text.strip()
+        if max_chunk_chars > 0 and len(text) > max_chunk_chars:
+            text = text[: max_chunk_chars - 1] + "…"
         blocks.append(
             "\n".join(
                 [
@@ -37,26 +137,31 @@ def _format_evidence(evidence: Sequence[LegalChunk]) -> str:
                     f"    document_id={chunk.document_id}",
                     f"    citation={chunk.citation_path}",
                     f"    effective_date={eff}",
-                    f"    text={chunk.text}",
+                    f"    text={text}",
                 ]
             )
         )
     return "\n\n".join(blocks)
 
 
-def _build_prompt(query: str, evidence: Sequence[LegalChunk]) -> str:
+def _build_prompt(
+    query: str,
+    evidence: Sequence[LegalChunk],
+    *,
+    max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
+) -> str:
     return f"""Bạn là trợ lý pháp lý Việt Nam. Chỉ dùng bằng chứng bên dưới.
 
-Yêu cầu:
-- Trả lời ngắn gọn bằng tiếng Việt.
-- Mọi kết luận phải bám đúng văn bản trong evidence.
-- Trích dẫn bằng document_id + citation (Điều/Khoản/Điểm).
-- Nếu evidence không đủ: nói rõ và đặt abstained=true, không bịa điều luật.
+Yêu cầu trả lời:
+- Viết bằng tiếng Việt, đủ ý để người dùng hiểu quy định (không chỉ một câu quá ngắn).
+- Có: (1) kết luận ngắn, (2) nội dung/điều kiện chính, (3) trích dẫn document_id + citation.
+- Bám sát văn bản trong evidence; không bịa điều luật.
+- Nếu evidence không đủ: nói rõ và đặt abstained=true.
 
 Trả về ĐÚNG một JSON object, không markdown, không giải thích:
 {{
-  "answer": "văn bản trả lời cho người dùng",
-  "cited_chunk_ids": ["chunk_id đã dùng"],
+  "answer": "văn bản trả lời đầy đủ cho người dùng",
+  "cited_chunk_ids": ["chunk_id đã dùng — copy đúng từ evidence"],
   "abstained": false
 }}
 
@@ -64,7 +169,7 @@ Câu hỏi:
 {query}
 
 Evidence:
-{_format_evidence(evidence)}
+{_format_evidence(evidence, max_chunk_chars=max_chunk_chars)}
 """
 
 
@@ -80,11 +185,57 @@ def _strip_fences(content: str) -> str:
     return text
 
 
-def _parse_draft(
-    content: str, allowed_ids: set[str]
-) -> DraftAnswer:
+def _repair_truncated_json(text: str) -> str:
+    """Best-effort close for truncated model JSON (common when evidence is large)."""
+    if not text or text.lstrip().startswith("{"):
+        candidate = text.strip()
+    else:
+        start = text.find("{")
+        candidate = text[start:].strip() if start >= 0 else text.strip()
+    if not candidate:
+        return candidate
+    # If answer string is open, close it before repairing braces.
+    if candidate.count('"') % 2 == 1:
+        candidate += '"'
+    open_braces = candidate.count("{") - candidate.count("}")
+    open_brackets = candidate.count("[") - candidate.count("]")
+    candidate += "]" * max(open_brackets, 0)
+    candidate += "}" * max(open_braces, 0)
+    return candidate
+
+
+def _parse_draft(content: str, allowed_ids: set[str]) -> DraftAnswer:
     text = _strip_fences(content)
-    data = json.loads(text)
+    data: dict[str, Any] | None = None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            data = json.loads(_repair_truncated_json(text))
+        except json.JSONDecodeError:
+            match = re.search(r'"answer"\s*:\s*"(.*?)(?<!\\)"', text, re.DOTALL)
+            if match:
+                answer = (
+                    match.group(1)
+                    .replace("\\n", "\n")
+                    .replace('\\"', '"')
+                    .replace("\\\\", "\\")
+                    .strip()
+                )
+                return DraftAnswer(
+                    answer=answer or "Không đủ căn cứ trong evidence để trả lời.",
+                    cited_chunk_ids=[],
+                    abstained=not bool(answer),
+                )
+            return DraftAnswer(
+                answer=(
+                    "Mô hình trả về JSON không hợp lệ; không thể soạn câu trả lời. "
+                    "Thử lại hoặc giảm số evidence."
+                ),
+                cited_chunk_ids=[],
+                abstained=True,
+            )
+
     raw_ids = data.get("cited_chunk_ids") or []
     cited = [str(cid) for cid in raw_ids if str(cid) in allowed_ids]
     abstained = bool(data.get("abstained"))
@@ -102,6 +253,9 @@ def generate_draft(
     client: Any | None = None,
     model: str | None = None,
     generate_fn: GenerateFn | None = None,
+    max_evidence_chunks: int = DEFAULT_MAX_EVIDENCE,
+    max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
+    seed_ids: set[str] | None = None,
 ) -> DraftAnswer:
     """Draft a user-facing answer from SAG (or Voyage) evidence chunks."""
     if generate_fn is not None:
@@ -114,6 +268,9 @@ def generate_draft(
             abstained=True,
         )
 
+    selected = select_evidence_for_draft(
+        evidence, max_chunks=max_evidence_chunks, seed_ids=seed_ids
+    )
     from sag_legal.sag.extract import get_qwen_client
     from sag_legal.settings import get_settings
 
@@ -124,10 +281,16 @@ def generate_draft(
         model=active_model,
         messages=[
             {"role": "system", "content": "Output valid JSON only."},
-            {"role": "user", "content": _build_prompt(query, evidence)},
+            {
+                "role": "user",
+                "content": _build_prompt(
+                    query, selected, max_chunk_chars=max_chunk_chars
+                ),
+            },
         ],
         temperature=0,
+        max_tokens=1200,
     )
     content = response.choices[0].message.content or "{}"
-    allowed = {chunk.chunk_id for chunk in evidence}
+    allowed = {chunk.chunk_id for chunk in selected}
     return _parse_draft(content, allowed)

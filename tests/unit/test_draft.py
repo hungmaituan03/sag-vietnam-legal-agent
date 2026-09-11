@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from types import SimpleNamespace
 
 from sag_legal.generation import DraftAnswer, generate_draft
+from sag_legal.generation.draft import select_evidence_for_draft
 from sag_legal.models import LegalChunk
 
 
@@ -89,3 +90,85 @@ def test_client_markdown_fence_and_empty_answer_abstains():
     out = generate_draft("q?", evidence, client=_FakeClient(), model="fake")
     assert out.abstained is True
     assert "Không đủ căn cứ" in out.answer
+
+
+def test_select_evidence_caps_seed_first_order():
+    chunks = [_chunk("d", f"Điều {i}", f"text {i}") for i in range(12)]
+    selected = select_evidence_for_draft(chunks, max_chunks=8)
+    assert len(selected) == 8
+    assert selected[0].chunk_id == chunks[0].chunk_id
+    assert selected[-1].chunk_id == chunks[7].chunk_id
+
+
+def test_select_evidence_prefers_same_article_repairs():
+    """SAG parents must beat other-seed headings when the draft budget is tight."""
+    seed_a = LegalChunk(
+        chunk_id="doc::A::điểma",
+        document_id="doc",
+        text="a) Cuối kỳ kế toán năm;",
+        article="Điều 40",
+        clause="Khoản 2",
+        point="Điểm a",
+    )
+    seed_b = LegalChunk(
+        chunk_id="doc::B::điểma",
+        document_id="doc",
+        text="a) Lập báo cáo tài chính;",
+        article="Điều 29",
+        clause="Khoản 2",
+        point="Điểm a",
+    )
+    other_heading = LegalChunk(
+        chunk_id="doc::B",
+        document_id="doc",
+        text="Điều 29. Báo cáo tài chính",
+        article="Điều 29",
+    )
+    repair_heading = LegalChunk(
+        chunk_id="doc::A",
+        document_id="doc",
+        text="Điều 40. Kiểm kê tài sản",
+        article="Điều 40",
+    )
+    repair_stem = LegalChunk(
+        chunk_id="doc::A::khoản2",
+        document_id="doc",
+        text="2. Đơn vị kế toán phải kiểm kê tài sản trong các trường hợp sau đây:",
+        article="Điều 40",
+        clause="Khoản 2",
+    )
+    # Expand order: seeds, then other heading before the useful repairs.
+    evidence = [seed_b, seed_a, other_heading, repair_heading, repair_stem]
+    selected = select_evidence_for_draft(
+        evidence,
+        max_chunks=4,
+        seed_ids={seed_a.chunk_id, seed_b.chunk_id},
+    )
+    ids = [c.chunk_id for c in selected]
+    assert seed_a.chunk_id in ids and seed_b.chunk_id in ids
+    assert repair_heading.chunk_id in ids
+    assert repair_stem.chunk_id in ids
+    assert other_heading.chunk_id not in ids
+
+
+def test_truncated_json_still_yields_answer():
+    evidence = [_chunk("luat-ke-toan", "Điều 12", "Kỳ kế toán năm.")]
+    # Truncated mid cited_chunk_ids array — common with large prompts.
+    raw = (
+        '{\n  "answer": "Kỳ kế toán năm là 12 tháng.",\n'
+        '  "cited_chunk_ids": ["luat-ke-toan::Điều12",\n  "absta'
+    )
+
+    class _Msg:
+        content = raw
+
+    class _FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**_kwargs):
+                    return SimpleNamespace(choices=[SimpleNamespace(message=_Msg())])
+
+    out = generate_draft("q?", evidence, client=_FakeClient(), model="fake")
+    assert "12 tháng" in out.answer
+    assert out.abstained is False
