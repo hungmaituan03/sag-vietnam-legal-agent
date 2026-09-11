@@ -285,6 +285,20 @@ def test_expand_min_sim_filters_weak_edges_at_query_time():
     assert [c.chunk_id for c in out] == ["doc-a::Điều1", "doc-b::Điều1"]
 
 
+def test_expand_shares_a_tight_budget_across_seeds():
+    """A seed in a big article must not starve the other seeds."""
+    index = build_index(_mini_chunks())
+    seeds = [
+        index.events_by_id["doc-a::Điều2::Khoản1::Điểma"],  # 4 unseen siblings
+        index.events_by_id["doc-b::Điều2::Khoản1"],  # 1 unseen sibling
+    ]
+
+    out = expand(seeds, index, max_extra=2)
+    added = [c.document_id for c in out if c not in seeds]
+
+    assert sorted(added) == ["doc-a", "doc-b"]
+
+
 def test_expand_budget_still_caps_a_multi_hop_walk():
     index = _chained_index()
     seed = index.events_by_id["doc-a::Điều1"]

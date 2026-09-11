@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from itertools import zip_longest
 
 import numpy as np
 
@@ -31,7 +32,7 @@ class EventEntityIndex:
     events_by_entity: dict[str, list[str]] = field(default_factory=dict)
     # chunk_id -> [(neighbour_id, cosine), ...], best first. Empty without vectors.
     neighbours: dict[str, list[tuple[str, float]]] = field(default_factory=dict)
-
+ 
 
 def build_semantic_edges(
     chunks: Sequence[LegalChunk],
@@ -99,6 +100,18 @@ def _semantic_ids(chunk_id: str, index: EventEntityIndex, min_sim: float) -> lis
     return [nid for nid, sim in index.neighbours.get(chunk_id, []) if sim >= min_sim]
 
 
+def _candidate_ids(
+    chunk: LegalChunk,
+    index: EventEntityIndex,
+    use_semantic: bool,
+    min_sim: float,
+) -> list[str]:
+    ids = list(_structural_ids(chunk, index))
+    if use_semantic:
+        ids += _semantic_ids(chunk.chunk_id, index, min_sim)
+    return ids
+
+
 def expand(
     seed_chunks: Sequence[LegalChunk],
     index: EventEntityIndex,
@@ -110,24 +123,25 @@ def expand(
     """Walk the hyperedges out from the seeds, keeping seed order in front.
 
     Each hop follows two edge types: same-Điều siblings and semantic
-    neighbours. `max_extra` bounds the whole walk, so a seed in a long article
-    can starve later seeds — that is the trade-off of a global budget.
+    neighbours. Candidates are taken round-robin across the frontier, so a seed
+    sitting in a 46-clause Điều cannot spend the whole budget before the later
+    seeds contribute anything.
     """
     seen = {c.chunk_id for c in seed_chunks}
     extras: list[LegalChunk] = []
     frontier: list[LegalChunk] = list(seed_chunks)
 
     for _ in range(max(hops, 0)):
+        candidate_lists = [
+            _candidate_ids(chunk, index, use_semantic, min_sim) for chunk in frontier
+        ]
         next_frontier: list[LegalChunk] = []
-        for chunk in frontier:
-            candidates = _structural_ids(chunk, index)
-            if use_semantic:
-                candidates = candidates + _semantic_ids(chunk.chunk_id, index, min_sim)
-            for cid in candidates:
+        for column in zip_longest(*candidate_lists):
+            for cid in column:
+                if cid is None or cid in seen:
+                    continue
                 if len(extras) >= max_extra:
                     return list(seed_chunks) + extras
-                if cid in seen:
-                    continue
                 neighbour = index.events_by_id.get(cid)
                 if neighbour is None:
                     continue
