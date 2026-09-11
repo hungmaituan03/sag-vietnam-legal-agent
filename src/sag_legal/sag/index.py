@@ -16,13 +16,20 @@ import numpy as np
 from sag_legal.models import LegalChunk
 
 
-def entity_keys(chunk: LegalChunk) -> list[str]:
-    """Legal coordinates a chunk belongs to, coarse -> fine."""
+def entity_keys(
+    chunk: LegalChunk,
+    extra: Sequence[str] | None = None,
+) -> list[str]:
+    """Legal coordinates a chunk belongs to, coarse -> fine, plus optional concepts."""
     keys = [f"law::{chunk.document_id}"]
     if chunk.article:
         keys.append(f"art::{chunk.document_id}::{chunk.article}")
         if chunk.clause:
             keys.append(f"cls::{chunk.document_id}::{chunk.article}::{chunk.clause}")
+    if extra:
+        for key in extra:
+            if key and key not in keys:
+                keys.append(key)
     return keys
 
 
@@ -30,6 +37,8 @@ def entity_keys(chunk: LegalChunk) -> list[str]:
 class EventEntityIndex:
     events_by_id: dict[str, LegalChunk] = field(default_factory=dict)
     events_by_entity: dict[str, list[str]] = field(default_factory=dict)
+    # chunk_id -> entity keys (structural + concept), for reverse lookup at expand time
+    keys_by_event: dict[str, list[str]] = field(default_factory=dict)
     # chunk_id -> [(neighbour_id, cosine), ...], best first. Empty without vectors.
     neighbours: dict[str, list[tuple[str, float]]] = field(default_factory=dict)
  
@@ -81,13 +90,17 @@ def build_index(
     top_n: int = 5,
     min_sim: float = 0.6,
     max_sim: float = 0.99,
+    concepts: Mapping[str, Sequence[str]] | None = None,
 ) -> EventEntityIndex:
     index = EventEntityIndex()
     for chunk in chunks:
         if chunk.chunk_id in index.events_by_id:
             continue
         index.events_by_id[chunk.chunk_id] = chunk
-        for key in entity_keys(chunk):
+        extras = list(concepts.get(chunk.chunk_id, [])) if concepts else None
+        keys = entity_keys(chunk, extra=extras)
+        index.keys_by_event[chunk.chunk_id] = keys
+        for key in keys:
             index.events_by_entity.setdefault(key, []).append(chunk.chunk_id)
 
     if vectors:
@@ -132,13 +145,30 @@ def _semantic_ids(chunk_id: str, index: EventEntityIndex, min_sim: float) -> lis
     return [nid for nid, sim in index.neighbours.get(chunk_id, []) if sim >= min_sim]
 
 
+def _concept_ids(chunk_id: str, index: EventEntityIndex) -> list[str]:
+    """Events sharing a concept:: entity with this chunk — the paper's SQL join."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for key in index.keys_by_event.get(chunk_id, []):
+        if not key.startswith("concept::"):
+            continue
+        for neighbour_id in index.events_by_entity.get(key, []):
+            if neighbour_id not in seen:
+                seen.add(neighbour_id)
+                ids.append(neighbour_id)
+    return ids
+
+
 def _candidate_ids(
     chunk: LegalChunk,
     index: EventEntityIndex,
     use_semantic: bool,
     min_sim: float,
+    use_concepts: bool,
 ) -> list[str]:
     ids = list(_structural_ids(chunk, index))
+    if use_concepts:
+        ids += _concept_ids(chunk.chunk_id, index)
     if use_semantic:
         ids += _semantic_ids(chunk.chunk_id, index, min_sim)
     return ids
@@ -151,13 +181,14 @@ def expand(
     hops: int = 1,
     min_sim: float = 0.0,
     use_semantic: bool = True,
+    use_concepts: bool = True,
 ) -> list[LegalChunk]:
     """Walk the hyperedges out from the seeds, keeping seed order in front.
 
-    Each hop follows two edge types: same-Điều siblings and semantic
-    neighbours. Candidates are taken round-robin across the frontier, so a seed
-    sitting in a 46-clause Điều cannot spend the whole budget before the later
-    seeds contribute anything.
+    Each hop follows three edge types: same-Điều siblings, shared concept
+    entities (LLM-extracted), and semantic neighbours. Candidates are taken
+    round-robin across the frontier, so a seed sitting in a 46-clause Điều
+    cannot spend the whole budget before the later seeds contribute anything.
     """
     seen = {c.chunk_id for c in seed_chunks}
     extras: list[LegalChunk] = []
@@ -165,7 +196,8 @@ def expand(
 
     for _ in range(max(hops, 0)):
         candidate_lists = [
-            _candidate_ids(chunk, index, use_semantic, min_sim) for chunk in frontier
+            _candidate_ids(chunk, index, use_semantic, min_sim, use_concepts)
+            for chunk in frontier
         ]
         next_frontier: list[LegalChunk] = []
         for column in zip_longest(*candidate_lists):
