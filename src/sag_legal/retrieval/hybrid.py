@@ -53,13 +53,14 @@ def search_hybrid(
     chunks: list[LegalChunk],
     k: int = 5,
     model=None,
+    vectors=None,
 ) -> list[ScoreChunk]:
     if not chunks or k <= 0:
         return []
 
     pool = len(chunks)
     bm25_hits = search_bm25(query, chunks, k=pool)
-    dense_hits = search_dense(query, chunks, k=pool, model=model)
+    dense_hits = search_dense(query, chunks, k=pool, model=model, vectors=vectors)
 
     bm25_ranks = hits_to_ranks(bm25_hits)
     dense_ranks = hits_to_ranks(dense_hits)
