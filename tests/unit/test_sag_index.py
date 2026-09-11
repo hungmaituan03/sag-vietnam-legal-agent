@@ -317,6 +317,46 @@ def test_expand_min_sim_filters_weak_edges_at_query_time():
     assert [c.chunk_id for c in out] == ["doc-a::Điều1", "doc-b::Điều1"]
 
 
+def _deep_article_chunks() -> list[LegalChunk]:
+    """One Điều where the seed's own khoản sits late in document order."""
+    return [
+        _chunk("doc-a", "Điều 2"),
+        _chunk("doc-a", "Điều 2", "Khoản 1"),
+        _chunk("doc-a", "Điều 2", "Khoản 1", "Điểm a"),
+        _chunk("doc-a", "Điều 2", "Khoản 1", "Điểm b"),
+        _chunk("doc-a", "Điều 2", "Khoản 2"),
+        _chunk("doc-a", "Điều 2", "Khoản 2", "Điểm a"),
+        _chunk("doc-a", "Điều 2", "Khoản 2", "Điểm b"),
+    ]
+
+
+def test_expand_reaches_the_seeds_own_clause_before_distant_siblings():
+    index = build_index(_deep_article_chunks())
+    seed = index.events_by_id["doc-a::Điều2::Khoản2::Điểma"]
+
+    out = expand([seed], index, max_extra=2)
+
+    assert [c.chunk_id for c in out] == [
+        "doc-a::Điều2::Khoản2::Điểma",
+        "doc-a::Điều2",
+        "doc-a::Điều2::Khoản2",
+    ], "heading and the seed's own khoản must come before Khoản 1's subtree"
+
+
+def test_expand_keeps_document_order_within_a_kinship_rank():
+    index = build_index(_deep_article_chunks())
+    seed = index.events_by_id["doc-a::Điều2::Khoản2::Điểma"]
+
+    tail = [c.chunk_id for c in expand([seed], index, max_extra=10)][3:]
+
+    assert tail == [
+        "doc-a::Điều2::Khoản2::Điểmb",
+        "doc-a::Điều2::Khoản1",
+        "doc-a::Điều2::Khoản1::Điểma",
+        "doc-a::Điều2::Khoản1::Điểmb",
+    ]
+
+
 def test_expand_shares_a_tight_budget_across_seeds():
     """A seed in a big article must not starve the other seeds."""
     index = build_index(_mini_chunks())

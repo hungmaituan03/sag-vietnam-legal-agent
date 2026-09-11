@@ -101,11 +101,30 @@ def build_index(
     return index
 
 
+def _kinship(candidate: LegalChunk, seed: LegalChunk) -> int:
+    """How closely a candidate encloses the seed. Lower is nearer."""
+    if candidate.clause is None and candidate.point is None:
+        return 0  # the Điều heading
+    if candidate.clause == seed.clause and candidate.point is None:
+        return 1  # the khoản this fragment hangs off
+    if candidate.clause == seed.clause:
+        return 2  # điểm siblings inside that khoản
+    return 3  # the rest of the article
+
+
 def _structural_ids(chunk: LegalChunk, index: EventEntityIndex) -> list[str]:
-    """Events sharing this chunk's Điều — the hierarchy edge."""
+    """Events sharing this chunk's Điều, nearest ancestors first.
+
+    Buckets are in document order, so a seed's own khoản can sit 39 entries
+    deep in a long Điều and never be reached before the budget runs out.
+    Sorting is stable, so document order still breaks ties within a rank.
+    """
     if not chunk.article:
         return []
-    return index.events_by_entity.get(f"art::{chunk.document_id}::{chunk.article}", [])
+    bucket = index.events_by_entity.get(f"art::{chunk.document_id}::{chunk.article}", [])
+    if len(bucket) < 2:
+        return list(bucket)
+    return sorted(bucket, key=lambda cid: _kinship(index.events_by_id[cid], chunk))
 
 
 def _semantic_ids(chunk_id: str, index: EventEntityIndex, min_sim: float) -> list[str]:
