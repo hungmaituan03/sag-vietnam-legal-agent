@@ -225,6 +225,38 @@ def test_build_semantic_edges_min_sim_can_drop_everything():
     assert edges == {}
 
 
+def test_build_semantic_edges_drops_near_duplicates():
+    """A verbatim restatement adds nothing, so it must not hold a slot."""
+    chunks = [
+        _chunk("doc-a", "Điều 1"),
+        _chunk("doc-b", "Điều 1"),  # identical vector to doc-a
+        _chunk("doc-b", "Điều 2"),  # merely similar
+    ]
+    vectors = {
+        "doc-a::Điều1": np.array([1.0, 0.0], dtype=np.float32),
+        "doc-b::Điều1": np.array([1.0, 0.0], dtype=np.float32),
+        "doc-b::Điều2": np.array([0.95, 0.312], dtype=np.float32),
+    }
+
+    edges = build_semantic_edges(chunks, vectors, top_n=1, min_sim=0.5, max_sim=0.99)
+    neighbours = [nid for nid, _ in edges["doc-a::Điều1"]]
+
+    assert "doc-b::Điều1" not in neighbours, "cosine 1.0 duplicate must be dropped"
+    assert neighbours == ["doc-b::Điều2"], "the freed slot goes to a real neighbour"
+
+
+def test_build_semantic_edges_keeps_close_but_distinct_neighbours():
+    chunks = [_chunk("doc-a", "Điều 1"), _chunk("doc-b", "Điều 1")]
+    vectors = {
+        "doc-a::Điều1": np.array([1.0, 0.0], dtype=np.float32),
+        "doc-b::Điều1": np.array([0.95, 0.312], dtype=np.float32),
+    }
+
+    edges = build_semantic_edges(chunks, vectors, top_n=1, min_sim=0.5, max_sim=0.99)
+
+    assert [nid for nid, _ in edges["doc-a::Điều1"]] == ["doc-b::Điều1"]
+
+
 def test_build_index_without_vectors_has_no_semantic_edges():
     assert build_index(_mini_chunks()).neighbours == {}
 
@@ -283,6 +315,46 @@ def test_expand_min_sim_filters_weak_edges_at_query_time():
     out = expand([seed], index, hops=2, min_sim=0.8)
 
     assert [c.chunk_id for c in out] == ["doc-a::Điều1", "doc-b::Điều1"]
+
+
+def _deep_article_chunks() -> list[LegalChunk]:
+    """One Điều where the seed's own khoản sits late in document order."""
+    return [
+        _chunk("doc-a", "Điều 2"),
+        _chunk("doc-a", "Điều 2", "Khoản 1"),
+        _chunk("doc-a", "Điều 2", "Khoản 1", "Điểm a"),
+        _chunk("doc-a", "Điều 2", "Khoản 1", "Điểm b"),
+        _chunk("doc-a", "Điều 2", "Khoản 2"),
+        _chunk("doc-a", "Điều 2", "Khoản 2", "Điểm a"),
+        _chunk("doc-a", "Điều 2", "Khoản 2", "Điểm b"),
+    ]
+
+
+def test_expand_reaches_the_seeds_own_clause_before_distant_siblings():
+    index = build_index(_deep_article_chunks())
+    seed = index.events_by_id["doc-a::Điều2::Khoản2::Điểma"]
+
+    out = expand([seed], index, max_extra=2)
+
+    assert [c.chunk_id for c in out] == [
+        "doc-a::Điều2::Khoản2::Điểma",
+        "doc-a::Điều2",
+        "doc-a::Điều2::Khoản2",
+    ], "heading and the seed's own khoản must come before Khoản 1's subtree"
+
+
+def test_expand_keeps_document_order_within_a_kinship_rank():
+    index = build_index(_deep_article_chunks())
+    seed = index.events_by_id["doc-a::Điều2::Khoản2::Điểma"]
+
+    tail = [c.chunk_id for c in expand([seed], index, max_extra=10)][3:]
+
+    assert tail == [
+        "doc-a::Điều2::Khoản2::Điểmb",
+        "doc-a::Điều2::Khoản1",
+        "doc-a::Điều2::Khoản1::Điểma",
+        "doc-a::Điều2::Khoản1::Điểmb",
+    ]
 
 
 def test_expand_shares_a_tight_budget_across_seeds():

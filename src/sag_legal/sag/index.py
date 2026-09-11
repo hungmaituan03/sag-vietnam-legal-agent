@@ -39,8 +39,13 @@ def build_semantic_edges(
     vectors: Mapping[str, np.ndarray],
     top_n: int = 5,
     min_sim: float = 0.6,
+    max_sim: float = 0.99,
 ) -> dict[str, list[tuple[str, float]]]:
-    """Link each event to its nearest neighbours by meaning, across documents."""
+    """Link each event to its nearest neighbours by meaning, across documents.
+
+    `max_sim` drops near-duplicates: legal texts repeat clauses verbatim, and a
+    restatement fills a slot without adding anything for the reader.
+    """
     ids: list[str] = []
     for chunk in chunks:
         if chunk.chunk_id in vectors and chunk.chunk_id not in ids:
@@ -54,6 +59,9 @@ def build_semantic_edges(
 
     sims = matrix @ matrix.T
     np.fill_diagonal(sims, -1.0)
+    # Mask before selecting, so a dropped duplicate frees its slot for a real
+    # neighbour instead of shrinking the list.
+    sims[sims > max_sim] = -1.0
 
     keep = min(top_n, len(ids) - 1)
     edges: dict[str, list[tuple[str, float]]] = {}
@@ -72,6 +80,7 @@ def build_index(
     vectors: Mapping[str, np.ndarray] | None = None,
     top_n: int = 5,
     min_sim: float = 0.6,
+    max_sim: float = 0.99,
 ) -> EventEntityIndex:
     index = EventEntityIndex()
     for chunk in chunks:
@@ -83,16 +92,39 @@ def build_index(
 
     if vectors:
         index.neighbours = build_semantic_edges(
-            list(index.events_by_id.values()), vectors, top_n=top_n, min_sim=min_sim
+            list(index.events_by_id.values()),
+            vectors,
+            top_n=top_n,
+            min_sim=min_sim,
+            max_sim=max_sim,
         )
     return index
 
 
+def _kinship(candidate: LegalChunk, seed: LegalChunk) -> int:
+    """How closely a candidate encloses the seed. Lower is nearer."""
+    if candidate.clause is None and candidate.point is None:
+        return 0  # the Điều heading
+    if candidate.clause == seed.clause and candidate.point is None:
+        return 1  # the khoản this fragment hangs off
+    if candidate.clause == seed.clause:
+        return 2  # điểm siblings inside that khoản
+    return 3  # the rest of the article
+
+
 def _structural_ids(chunk: LegalChunk, index: EventEntityIndex) -> list[str]:
-    """Events sharing this chunk's Điều — the hierarchy edge."""
+    """Events sharing this chunk's Điều, nearest ancestors first.
+
+    Buckets are in document order, so a seed's own khoản can sit 39 entries
+    deep in a long Điều and never be reached before the budget runs out.
+    Sorting is stable, so document order still breaks ties within a rank.
+    """
     if not chunk.article:
         return []
-    return index.events_by_entity.get(f"art::{chunk.document_id}::{chunk.article}", [])
+    bucket = index.events_by_entity.get(f"art::{chunk.document_id}::{chunk.article}", [])
+    if len(bucket) < 2:
+        return list(bucket)
+    return sorted(bucket, key=lambda cid: _kinship(index.events_by_id[cid], chunk))
 
 
 def _semantic_ids(chunk_id: str, index: EventEntityIndex, min_sim: float) -> list[str]:
