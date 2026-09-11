@@ -8,9 +8,11 @@ output in, to catch label/key mismatches.
 import json
 from pathlib import Path
 
+import numpy as np
+
 from sag_legal.ingestion import flatten_chunks, ingest_corpus
 from sag_legal.models import LegalChunk
-from sag_legal.sag import build_index, entity_keys, expand
+from sag_legal.sag import build_index, build_semantic_edges, entity_keys, expand
 
 
 def _chunk(
@@ -175,6 +177,133 @@ def test_expand_seed_without_article_returns_seeds_unchanged():
 
 def test_expand_empty_seeds_returns_empty():
     assert expand([], build_index(_mini_chunks())) == []
+
+
+# --- semantic edges -------------------------------------------------------
+
+
+def _cross_law_chunks() -> list[LegalChunk]:
+    return [
+        _chunk("doc-a", "Điều 1"),
+        _chunk("doc-b", "Điều 1"),
+        _chunk("doc-b", "Điều 2"),
+    ]
+
+
+def _cross_law_vectors() -> dict[str, np.ndarray]:
+    """doc-a::Điều1 and doc-b::Điều1 are near-identical; doc-b::Điều2 is not."""
+    return {
+        "doc-a::Điều1": np.array([1.0, 0.0], dtype=np.float32),
+        "doc-b::Điều1": np.array([0.98, 0.199], dtype=np.float32),
+        "doc-b::Điều2": np.array([0.0, 1.0], dtype=np.float32),
+    }
+
+
+def test_build_semantic_edges_links_nearest_neighbour_across_documents():
+    edges = build_semantic_edges(
+        _cross_law_chunks(), _cross_law_vectors(), top_n=1, min_sim=0.5
+    )
+
+    assert [nid for nid, _ in edges["doc-a::Điều1"]] == ["doc-b::Điều1"]
+    assert edges["doc-a::Điều1"][0][1] > 0.9
+    assert "doc-b::Điều2" not in edges, "its best match is below min_sim"
+
+
+def test_build_semantic_edges_never_links_a_chunk_to_itself():
+    edges = build_semantic_edges(
+        _cross_law_chunks(), _cross_law_vectors(), top_n=2, min_sim=-1.0
+    )
+
+    for chunk_id, neighbours in edges.items():
+        assert chunk_id not in [nid for nid, _ in neighbours]
+
+
+def test_build_semantic_edges_min_sim_can_drop_everything():
+    edges = build_semantic_edges(
+        _cross_law_chunks(), _cross_law_vectors(), top_n=1, min_sim=0.999
+    )
+    assert edges == {}
+
+
+def test_build_index_without_vectors_has_no_semantic_edges():
+    assert build_index(_mini_chunks()).neighbours == {}
+
+
+def test_build_index_attaches_semantic_edges_when_given_vectors():
+    index = build_index(
+        _cross_law_chunks(), vectors=_cross_law_vectors(), top_n=1, min_sim=0.5
+    )
+    assert "doc-b::Điều1" in [nid for nid, _ in index.neighbours["doc-a::Điều1"]]
+
+
+# --- frontier expansion ---------------------------------------------------
+
+
+def _chained_index():
+    """doc-a::Điều1 -> doc-b::Điều1 -> doc-b::Điều2, one semantic edge each."""
+    index = build_index(_cross_law_chunks())
+    index.neighbours = {
+        "doc-a::Điều1": [("doc-b::Điều1", 0.98)],
+        "doc-b::Điều1": [("doc-b::Điều2", 0.71)],
+    }
+    return index
+
+
+def test_expand_follows_a_semantic_edge_into_another_law():
+    index = _chained_index()
+    seed = index.events_by_id["doc-a::Điều1"]
+
+    out = expand([seed], index)
+
+    assert [c.chunk_id for c in out] == ["doc-a::Điều1", "doc-b::Điều1"]
+
+
+def test_expand_can_be_restricted_to_structural_edges():
+    index = _chained_index()
+    seed = index.events_by_id["doc-a::Điều1"]
+
+    assert expand([seed], index, use_semantic=False) == [seed]
+
+
+def test_expand_two_hops_reaches_further_than_one():
+    index = _chained_index()
+    seed = index.events_by_id["doc-a::Điều1"]
+
+    one_hop = [c.chunk_id for c in expand([seed], index, hops=1)]
+    two_hops = [c.chunk_id for c in expand([seed], index, hops=2)]
+
+    assert one_hop == ["doc-a::Điều1", "doc-b::Điều1"]
+    assert two_hops == ["doc-a::Điều1", "doc-b::Điều1", "doc-b::Điều2"]
+
+
+def test_expand_min_sim_filters_weak_edges_at_query_time():
+    index = _chained_index()
+    seed = index.events_by_id["doc-a::Điều1"]
+
+    out = expand([seed], index, hops=2, min_sim=0.8)
+
+    assert [c.chunk_id for c in out] == ["doc-a::Điều1", "doc-b::Điều1"]
+
+
+def test_expand_shares_a_tight_budget_across_seeds():
+    """A seed in a big article must not starve the other seeds."""
+    index = build_index(_mini_chunks())
+    seeds = [
+        index.events_by_id["doc-a::Điều2::Khoản1::Điểma"],  # 4 unseen siblings
+        index.events_by_id["doc-b::Điều2::Khoản1"],  # 1 unseen sibling
+    ]
+
+    out = expand(seeds, index, max_extra=2)
+    added = [c.document_id for c in out if c not in seeds]
+
+    assert sorted(added) == ["doc-a", "doc-b"]
+
+
+def test_expand_budget_still_caps_a_multi_hop_walk():
+    index = _chained_index()
+    seed = index.events_by_id["doc-a::Điều1"]
+
+    assert len(expand([seed], index, hops=5, max_extra=1)) == 2
 
 
 # --- integration with the real chunker ------------------------------------
