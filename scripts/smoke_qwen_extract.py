@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from sag_legal.ingestion import FINANCE_DOC_IDS, flatten_chunks, ingest_corpus
+from sag_legal.ingestion import KHUNG1_DOC_IDS, flatten_chunks, ingest_corpus
 from sag_legal.sag import build_index, concept_keys_by_chunk, expand, extract_chunks
 from sag_legal.settings import get_settings
 
@@ -39,7 +39,7 @@ def main() -> None:
     if not RAW_JSON.is_file():
         raise SystemExit(f"Missing corpus: {RAW_JSON}")
 
-    chunks = flatten_chunks(ingest_corpus(RAW_JSON, doc_ids=FINANCE_DOC_IDS))
+    chunks = flatten_chunks(ingest_corpus(RAW_JSON, doc_ids=KHUNG1_DOC_IDS))
     by_id = {c.chunk_id: c for c in chunks}
     sample = [by_id[cid] for cid in SEED_IDS if cid in by_id][: args.limit]
     if not sample:

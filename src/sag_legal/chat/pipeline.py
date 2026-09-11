@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 
 from sag_legal.generation import DraftAnswer, generate_draft
-from sag_legal.ingestion import FINANCE_DOC_IDS, flatten_chunks, ingest_corpus
+from sag_legal.ingestion import KHUNG1_DOC_IDS, flatten_chunks, ingest_corpus
 from sag_legal.models import LegalChunk
 from sag_legal.reranking import rerank
 from sag_legal.retrieval.embeddings import embed_chunks
@@ -34,7 +34,7 @@ def _repo_root() -> Path:
 
 ROOT = _repo_root()
 RAW_JSON = ROOT / "data" / "raw" / "uts_vlc_processed.json"
-CACHE_NPZ = ROOT / "data" / "processed" / "finance_embeddings.npz"
+CACHE_NPZ = ROOT / "data" / "processed" / "khung1_embeddings.npz"
 
 RetrieveFn = Callable[..., list[LegalChunk]]
 GenerateFn = Callable[[str, Sequence[LegalChunk]], DraftAnswer]
@@ -98,7 +98,7 @@ def get_corpus(
         if not path.is_file():
             raise FileNotFoundError(f"Missing corpus: {path}")
 
-        results = ingest_corpus(path, doc_ids=FINANCE_DOC_IDS)
+        results = ingest_corpus(path, doc_ids=KHUNG1_DOC_IDS)
         titles = {r.document.document_id: r.document.title for r in results}
         chunks = flatten_chunks(results)
         vectors = embed_chunks(chunks, cache_path=cache_npz or CACHE_NPZ)

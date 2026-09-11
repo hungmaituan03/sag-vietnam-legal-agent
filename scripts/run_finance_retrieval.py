@@ -19,7 +19,7 @@ import argparse
 from pathlib import Path
 
 from sag_legal.generation import generate_draft
-from sag_legal.ingestion import FINANCE_DOC_IDS, flatten_chunks, ingest_corpus
+from sag_legal.ingestion import KHUNG1_DOC_IDS, flatten_chunks, ingest_corpus
 from sag_legal.models import LegalChunk
 from sag_legal.reranking import rerank
 from sag_legal.retrieval.bm25 import ScoreChunk, search_bm25
@@ -36,9 +36,10 @@ from sag_legal.settings import get_settings
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW_JSON = ROOT / "data" / "raw" / "uts_vlc_processed.json"
-CACHE_NPZ = ROOT / "data" / "processed" / "finance_embeddings.npz"
-QWEN_CACHE = ROOT / "data" / "processed" / "qwen_extract_finance.json"
+CACHE_NPZ = ROOT / "data" / "processed" / "khung1_embeddings.npz"
+QWEN_CACHE = ROOT / "data" / "processed" / "qwen_extract_khung1.json"
 DEFAULT_QUERY = "cấp giấy phép thành lập tổ chức tín dụng"
+
 
 
 def print_hits(title: str, hits: list[ScoreChunk], titles: dict[str, str]) -> None:
@@ -167,8 +168,8 @@ def main() -> None:
     if not RAW_JSON.is_file():
         raise SystemExit(f"Missing corpus: {RAW_JSON}")
 
-    print("Ingesting finance pack from", RAW_JSON.name)
-    results = ingest_corpus(RAW_JSON, doc_ids=FINANCE_DOC_IDS)
+    print("Ingesting Khung 1 pack from", RAW_JSON.name)
+    results = ingest_corpus(RAW_JSON, doc_ids=KHUNG1_DOC_IDS)
     titles: dict[str, str] = {}
     for result in results:
         doc = result.document

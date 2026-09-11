@@ -23,7 +23,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sag_legal.ingestion import FINANCE_DOC_IDS, flatten_chunks, ingest_corpus
+from sag_legal.ingestion import KHUNG1_DOC_IDS, flatten_chunks, ingest_corpus
 from sag_legal.models import LegalChunk
 from sag_legal.reranking import rerank
 from sag_legal.retrieval.embeddings import embed_chunks
@@ -33,7 +33,7 @@ from sag_legal.settings import get_settings
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW_JSON = ROOT / "data" / "raw" / "uts_vlc_processed.json"
-CACHE_NPZ = ROOT / "data" / "processed" / "finance_embeddings.npz"
+CACHE_NPZ = ROOT / "data" / "processed" / "khung1_embeddings.npz"
 REPORT_MD = ROOT / "docs" / "experiments" / "sag_evidence.md"
 
 QUERIES = [
@@ -127,7 +127,7 @@ def main() -> None:
     if not RAW_JSON.is_file():
         raise SystemExit(f"Missing corpus: {RAW_JSON}")
 
-    chunks = flatten_chunks(ingest_corpus(RAW_JSON, doc_ids=FINANCE_DOC_IDS))
+    chunks = flatten_chunks(ingest_corpus(RAW_JSON, doc_ids=KHUNG1_DOC_IDS))
     vectors = embed_chunks(chunks, cache_path=CACHE_NPZ)
     index = build_index(
         chunks, vectors=vectors, min_sim=args.min_sim, max_sim=args.max_sim
