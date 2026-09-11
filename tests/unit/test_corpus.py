@@ -267,3 +267,20 @@ def test_search_bm25_on_flattened_mini_corpus(tmp_path: Path):
     assert hits
     assert hits[0].score >= hits[-1].score
     assert "giấy phép" in hits[0].chunk.text.lower()
+
+
+def test_khung1_pack_ids_are_unique_and_exported():
+    from sag_legal.ingestion import FINANCE_DOC_IDS, KHUNG1_DOC_IDS
+
+    assert len(KHUNG1_DOC_IDS) >= 10
+    assert len(KHUNG1_DOC_IDS) == len(set(KHUNG1_DOC_IDS))
+    assert FINANCE_DOC_IDS == KHUNG1_DOC_IDS
+    # New Khung 1 coverage vs the old 5-law demo pack
+    for required in (
+        "law-2019-luat-chung-khoan",
+        "law-2025-luat-bao-ve-du-lieu-ca-nhan",
+        "law-2005-luat-so-huu-tri-tue",
+        "bo-luat-lao-dong",
+        "law-2012-luat-phong-chong-rua-tien",
+    ):
+        assert required in KHUNG1_DOC_IDS
