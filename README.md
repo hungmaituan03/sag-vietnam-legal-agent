@@ -35,6 +35,16 @@ cp .env.example .env   # fill keys locally — never commit .env
 pytest
 ```
 
+### Chat UI (optional)
+
+```bash
+pip install -e ".[web,dev]"
+python scripts/run_chat_ui.py
+# open http://127.0.0.1:8000
+```
+
+Needs `VOYAGE_API_KEY`, `QWEN_API_KEY`, and `data/raw/uts_vlc_processed.json`.
+
 ## Showing process on GitHub
 
 We use **small commits**, **pull requests**, **weekly milestone issues**, and **CI** so mentors can see progress over time. Read:

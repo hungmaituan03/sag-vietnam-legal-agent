@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SAG Legal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600&family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="atmosphere" aria-hidden="true"></div>
+    <div class="shell">
+      <header class="brand">
+        <p class="brand-name">SAG Legal</p>
+        <p class="brand-tag">
+          Hỏi về luật tài chính Việt Nam — hybrid, Voyage, SAG, rồi trả lời có
+          trích dẫn.
+        </p>
+      </header>
+
+      <main id="thread" class="thread" aria-live="polite">
+        <div class="empty" id="empty">
+          <p>Thử hỏi: “Kỳ kế toán năm được quy định thế nào?”</p>
+        </div>
+      </main>
+
+      <form id="composer" class="composer">
+        <label class="sr-only" for="query">Câu hỏi</label>
+        <textarea
+          id="query"
+          name="query"
+          rows="2"
+          placeholder="Nhập câu hỏi pháp lý…"
+          required
+        ></textarea>
+        <fieldset class="modes">
+          <legend class="sr-only">Chế độ truy xuất</legend>
+          <label class="mode">
+            <input type="radio" name="mode" value="sag" checked />
+            SAG
+          </label>
+          <label class="mode">
+            <input type="radio" name="mode" value="rag" />
+            RAG (no SAG)
+          </label>
+          <label class="mode">
+            <input type="radio" name="mode" value="compare" />
+            So sánh
+          </label>
+        </fieldset>
+        <button type="submit" id="send">Gửi</button>
+      </form>
+      <p class="status" id="status" hidden></p>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
