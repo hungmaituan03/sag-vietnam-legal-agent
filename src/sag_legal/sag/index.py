@@ -39,8 +39,13 @@ def build_semantic_edges(
     vectors: Mapping[str, np.ndarray],
     top_n: int = 5,
     min_sim: float = 0.6,
+    max_sim: float = 0.99,
 ) -> dict[str, list[tuple[str, float]]]:
-    """Link each event to its nearest neighbours by meaning, across documents."""
+    """Link each event to its nearest neighbours by meaning, across documents.
+
+    `max_sim` drops near-duplicates: legal texts repeat clauses verbatim, and a
+    restatement fills a slot without adding anything for the reader.
+    """
     ids: list[str] = []
     for chunk in chunks:
         if chunk.chunk_id in vectors and chunk.chunk_id not in ids:
@@ -54,6 +59,9 @@ def build_semantic_edges(
 
     sims = matrix @ matrix.T
     np.fill_diagonal(sims, -1.0)
+    # Mask before selecting, so a dropped duplicate frees its slot for a real
+    # neighbour instead of shrinking the list.
+    sims[sims > max_sim] = -1.0
 
     keep = min(top_n, len(ids) - 1)
     edges: dict[str, list[tuple[str, float]]] = {}
@@ -72,6 +80,7 @@ def build_index(
     vectors: Mapping[str, np.ndarray] | None = None,
     top_n: int = 5,
     min_sim: float = 0.6,
+    max_sim: float = 0.99,
 ) -> EventEntityIndex:
     index = EventEntityIndex()
     for chunk in chunks:
@@ -83,7 +92,11 @@ def build_index(
 
     if vectors:
         index.neighbours = build_semantic_edges(
-            list(index.events_by_id.values()), vectors, top_n=top_n, min_sim=min_sim
+            list(index.events_by_id.values()),
+            vectors,
+            top_n=top_n,
+            min_sim=min_sim,
+            max_sim=max_sim,
         )
     return index
 

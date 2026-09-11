@@ -225,6 +225,38 @@ def test_build_semantic_edges_min_sim_can_drop_everything():
     assert edges == {}
 
 
+def test_build_semantic_edges_drops_near_duplicates():
+    """A verbatim restatement adds nothing, so it must not hold a slot."""
+    chunks = [
+        _chunk("doc-a", "Điều 1"),
+        _chunk("doc-b", "Điều 1"),  # identical vector to doc-a
+        _chunk("doc-b", "Điều 2"),  # merely similar
+    ]
+    vectors = {
+        "doc-a::Điều1": np.array([1.0, 0.0], dtype=np.float32),
+        "doc-b::Điều1": np.array([1.0, 0.0], dtype=np.float32),
+        "doc-b::Điều2": np.array([0.95, 0.312], dtype=np.float32),
+    }
+
+    edges = build_semantic_edges(chunks, vectors, top_n=1, min_sim=0.5, max_sim=0.99)
+    neighbours = [nid for nid, _ in edges["doc-a::Điều1"]]
+
+    assert "doc-b::Điều1" not in neighbours, "cosine 1.0 duplicate must be dropped"
+    assert neighbours == ["doc-b::Điều2"], "the freed slot goes to a real neighbour"
+
+
+def test_build_semantic_edges_keeps_close_but_distinct_neighbours():
+    chunks = [_chunk("doc-a", "Điều 1"), _chunk("doc-b", "Điều 1")]
+    vectors = {
+        "doc-a::Điều1": np.array([1.0, 0.0], dtype=np.float32),
+        "doc-b::Điều1": np.array([0.95, 0.312], dtype=np.float32),
+    }
+
+    edges = build_semantic_edges(chunks, vectors, top_n=1, min_sim=0.5, max_sim=0.99)
+
+    assert [nid for nid, _ in edges["doc-a::Điều1"]] == ["doc-b::Điều1"]
+
+
 def test_build_index_without_vectors_has_no_semantic_edges():
     assert build_index(_mini_chunks()).neighbours == {}
 
