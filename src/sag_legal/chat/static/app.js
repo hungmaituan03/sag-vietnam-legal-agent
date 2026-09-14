@@ -165,7 +165,7 @@ fetch("/api/health")
       const missing = [];
       if (!h.corpus) missing.push("corpus");
       if (!h.voyage) missing.push("VOYAGE_API_KEY");
-      if (!h.qwen) missing.push("QWEN_API_KEY");
+      if (!h.openai) missing.push("OPENAI_API_KEY");
       setStatus(`Chưa sẵn sàng: thiếu ${missing.join(", ")}`, true);
     }
   })

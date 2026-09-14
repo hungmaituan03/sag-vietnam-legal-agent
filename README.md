@@ -43,7 +43,7 @@ python scripts/run_chat_ui.py
 # open http://127.0.0.1:8000
 ```
 
-Needs `VOYAGE_API_KEY`, `QWEN_API_KEY`, and `data/raw/uts_vlc_processed.json`.
+Needs `VOYAGE_API_KEY`, `OPENAI_API_KEY`, and `data/raw/uts_vlc_processed.json`.
 First run rebuilds `data/processed/khung1_embeddings.npz` for the expanded Khung 1 pack (~14 laws).
 
 ## Showing process on GitHub

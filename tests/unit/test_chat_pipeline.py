@@ -93,7 +93,8 @@ def test_use_sag_false_flag_on_result():
     assert out.stats.sag_added == 0
 
 
-def test_compare_query_shares_seed_counts():
+def test_compare_query_k_matched_rag_budget():
+    """RAG keeps Voyage depth voyage_k+sag_extra; SAG keeps shallow seeds + expand."""
     a = _chunk("luat-ke-toan", "Điều 12", "Kỳ kế toán gồm năm.")
     b = LegalChunk(
         chunk_id="luat-ke-toan::Điều12::Khoản1",
@@ -102,9 +103,10 @@ def test_compare_query_shares_seed_counts():
         article="Điều 12",
         clause="Khoản 1",
     )
+    c = _chunk("luat-ke-toan", "Điều 40", "Phải kiểm kê tài sản.")
     from sag_legal.sag import build_index
 
-    chunks = [a, b]
+    chunks = [a, b, c]
     bundle = CorpusBundle(
         chunks=chunks,
         titles={"luat-ke-toan": "Luật Kế toán"},
@@ -123,23 +125,79 @@ def test_compare_query_shares_seed_counts():
         )
 
     import sag_legal.chat.pipeline as pipe
+    from sag_legal.sag import ChunkExtraction
 
-    def fake_retrieve(query, active_bundle, **kwargs):
-        return [a], [a]
+    class _Hit:
+        def __init__(self, chunk: LegalChunk) -> None:
+            self.chunk = chunk
 
-    original = pipe._default_retrieve
-    pipe._default_retrieve = fake_retrieve
+    def fake_hybrid(query, corpus, k=20, vectors=None):
+        return [_Hit(a), _Hit(b), _Hit(c)]
+
+    def fake_rerank(query, documents, top_k=None, client=None, model=None):
+        return [_Hit(ch) for ch in documents[:top_k]]
+
+    def fake_query_extract(query: str) -> ChunkExtraction:
+        return ChunkExtraction(chunk_id="query")
+
+    original_hybrid = pipe.search_hybrid
+    original_rerank = pipe.rerank
+    pipe.search_hybrid = fake_hybrid
+    pipe.rerank = fake_rerank
     try:
         rag, sag = pipe.compare_query(
-            "kỳ kế toán?", bundle=bundle, generate_fn=generate
+            "kỳ kế toán?",
+            bundle=bundle,
+            voyage_k=1,
+            sag_extra=1,
+            rag_k=2,
+            generate_fn=generate,
+            query_extract_fn=fake_query_extract,
         )
     finally:
-        pipe._default_retrieve = original
+        pipe.search_hybrid = original_hybrid
+        pipe.rerank = original_rerank
 
     assert rag.use_sag is False
     assert sag.use_sag is True
-    assert rag.stats.seed_count == sag.stats.seed_count == 1
-    assert rag.stats.context_count == 1
-    assert sag.stats.context_count > 1
-    assert sag.stats.sag_added >= 1
+    assert rag.stats.context_count == 2  # K-matched deep shortlist
+    assert sag.stats.seed_count == 1  # shallow Voyage seeds
+    assert sag.stats.context_count > 1  # expand added siblings
     assert calls["n"] == 2
+
+
+def test_answer_query_rag_defaults_to_voyage_plus_extra():
+    a = _chunk("luat-ke-toan", "Điều 12", "Kỳ kế toán gồm năm.")
+    b = _chunk("luat-ke-toan", "Điều 40", "Phải kiểm kê.")
+    chunks = [a, b]
+    from sag_legal.sag import build_index
+
+    bundle = CorpusBundle(
+        chunks=chunks,
+        titles={"luat-ke-toan": "Luật Kế toán"},
+        vectors={},
+        index=build_index(chunks),
+    )
+
+    seen = {}
+
+    def retrieve(query: str, _bundle: CorpusBundle) -> list[LegalChunk]:
+        return [a, b]
+
+    def generate(query: str, evidence: Sequence[LegalChunk]) -> DraftAnswer:
+        seen["n"] = len(evidence)
+        return DraftAnswer(answer="ok", cited_chunk_ids=[a.chunk_id], abstained=False)
+
+    out = answer_query(
+        "kỳ kế toán?",
+        bundle=bundle,
+        use_sag=False,
+        voyage_k=1,
+        sag_extra=1,
+        retrieve_fn=retrieve,
+        generate_fn=generate,
+    )
+    # retrieve_fn returns both; seeds sliced to rag_k = voyage_k + sag_extra = 2
+    assert out.use_sag is False
+    assert out.stats.seed_count == 2
+    assert seen["n"] == 2

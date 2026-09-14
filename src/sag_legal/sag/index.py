@@ -159,6 +159,51 @@ def _concept_ids(chunk_id: str, index: EventEntityIndex) -> list[str]:
     return ids
 
 
+def lookup_by_concepts(
+    keys: Sequence[str],
+    index: EventEntityIndex,
+) -> list[LegalChunk]:
+    """Resolve `concept::…` keys against the index (query-time SQL-join stand-in)."""
+    out: list[LegalChunk] = []
+    seen: set[str] = set()
+    for key in keys:
+        if not key or not key.startswith("concept::"):
+            continue
+        for chunk_id in index.events_by_entity.get(key, []):
+            if chunk_id in seen:
+                continue
+            chunk = index.events_by_id.get(chunk_id)
+            if chunk is None:
+                continue
+            seen.add(chunk_id)
+            out.append(chunk)
+    return out
+
+
+def merge_seeds(
+    primary: Sequence[LegalChunk],
+    extra: Sequence[LegalChunk],
+) -> list[LegalChunk]:
+    """Keep primary order; append extras that are not already seeded."""
+    seen = {c.chunk_id for c in primary}
+    out = list(primary)
+    for chunk in extra:
+        if chunk.chunk_id in seen:
+            continue
+        seen.add(chunk.chunk_id)
+        out.append(chunk)
+    return out
+
+
+def seeds_with_query_concepts(
+    query_keys: Sequence[str],
+    voyage_seeds: Sequence[LegalChunk],
+    index: EventEntityIndex,
+) -> list[LegalChunk]:
+    """Voyage seeds first, then chunks that share the query's concept keys."""
+    return merge_seeds(voyage_seeds, lookup_by_concepts(query_keys, index))
+
+
 def _candidate_ids(
     chunk: LegalChunk,
     index: EventEntityIndex,

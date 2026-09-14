@@ -1,6 +1,6 @@
 """Query-time draft answer from post-SAG evidence chunks.
 
-Index-time Qwen extraction (sag.extract) builds concept joins.
+Index-time OpenAI extraction (sag.extract) builds concept joins.
 This module is a different LLM job: turn the evidence pack into a
 Vietnamese answer with citations. Hindsight stays out of scope for v0.
 
@@ -271,12 +271,18 @@ def generate_draft(
     selected = select_evidence_for_draft(
         evidence, max_chunks=max_evidence_chunks, seed_ids=seed_ids
     )
-    from sag_legal.sag.extract import get_qwen_client
+    from sag_legal.sag.extract import get_openai_client
     from sag_legal.settings import get_settings
 
     settings = get_settings()
-    active = client if client is not None else get_qwen_client()
-    active_model = model or settings.qwen_model
+    active = client if client is not None else get_openai_client()
+    active_model = model or settings.openai_model
+    # gpt-5+ rejects max_tokens; older chat models still want it.
+    token_kw = (
+        {"max_completion_tokens": 1200}
+        if active_model.lower().startswith(("gpt-5", "o1", "o3", "o4"))
+        else {"max_tokens": 1200}
+    )
     response = active.chat.completions.create(
         model=active_model,
         messages=[
@@ -289,7 +295,7 @@ def generate_draft(
             },
         ],
         temperature=0,
-        max_tokens=1200,
+        **token_kw,
     )
     content = response.choices[0].message.content or "{}"
     allowed = {chunk.chunk_id for chunk in selected}

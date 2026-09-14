@@ -6,7 +6,7 @@ Usage (repo root, venv on):
   python scripts/run_chat_ui.py
 
 Then open http://127.0.0.1:8000
-Requires VOYAGE_API_KEY, QWEN_API_KEY, and data/raw/uts_vlc_processed.json.
+Requires VOYAGE_API_KEY, OPENAI_API_KEY, and data/raw/uts_vlc_processed.json.
 """
 
 from __future__ import annotations
