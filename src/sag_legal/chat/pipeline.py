@@ -20,7 +20,16 @@ from sag_legal.models import LegalChunk
 from sag_legal.reranking import rerank
 from sag_legal.retrieval.embeddings import embed_chunks
 from sag_legal.retrieval.hybrid import search_hybrid
-from sag_legal.sag import EventEntityIndex, build_index, expand
+from sag_legal.sag import (
+    ChunkExtraction,
+    EventEntityIndex,
+    build_index,
+    concept_keys_by_chunk,
+    expand,
+    extract_query,
+    load_extractions,
+    seeds_with_query_concepts,
+)
 from sag_legal.settings import get_settings
 
 
@@ -35,9 +44,11 @@ def _repo_root() -> Path:
 ROOT = _repo_root()
 RAW_JSON = ROOT / "data" / "raw" / "uts_vlc_processed.json"
 CACHE_NPZ = ROOT / "data" / "processed" / "khung1_embeddings.npz"
+CONCEPT_CACHE = ROOT / "data" / "processed" / "qwen_extract_khung1.json"
 
 RetrieveFn = Callable[..., list[LegalChunk]]
 GenerateFn = Callable[[str, Sequence[LegalChunk]], DraftAnswer]
+QueryExtractFn = Callable[[str], ChunkExtraction]
 
 
 @dataclass
@@ -102,11 +113,30 @@ def get_corpus(
         titles = {r.document.document_id: r.document.title for r in results}
         chunks = flatten_chunks(results)
         vectors = embed_chunks(chunks, cache_path=cache_npz or CACHE_NPZ)
-        index = build_index(chunks, vectors=vectors, min_sim=min_sim)
+        concepts = None
+        if CONCEPT_CACHE.is_file():
+            concepts = concept_keys_by_chunk(load_extractions(CONCEPT_CACHE))
+        index = build_index(
+            chunks, vectors=vectors, min_sim=min_sim, concepts=concepts
+        )
         _bundle = CorpusBundle(
             chunks=chunks, titles=titles, vectors=vectors, index=index
         )
         return _bundle
+
+
+def _augment_seeds_with_query(
+    query: str,
+    seeds: list[LegalChunk],
+    index: EventEntityIndex,
+    *,
+    query_extract_fn: QueryExtractFn | None = None,
+) -> list[LegalChunk]:
+    """LLM-extract the query, join concept:: keys into the Voyage seed list."""
+    if query_extract_fn is None and not get_settings().openai_configured:
+        return seeds
+    extraction = extract_query(query, extract_fn=query_extract_fn)
+    return seeds_with_query_concepts(extraction.concept_keys(), seeds, index)
 
 
 def _default_retrieve(
@@ -120,6 +150,7 @@ def _default_retrieve(
     min_sim: float,
     use_sag: bool,
     voyage_client: Any | None,
+    query_extract_fn: QueryExtractFn | None = None,
 ) -> tuple[list[LegalChunk], list[LegalChunk]]:
     """Return (seeds, evidence). Seeds are Voyage top-k; evidence is after SAG."""
     hybrid_hits = search_hybrid(
@@ -134,6 +165,9 @@ def _default_retrieve(
     seeds = [hit.chunk for hit in voyage_hits]
     if not use_sag:
         return seeds, list(seeds)
+    seeds = _augment_seeds_with_query(
+        query, seeds, bundle.index, query_extract_fn=query_extract_fn
+    )
     evidence = expand(
         seeds,
         bundle.index,
@@ -151,17 +185,20 @@ def answer_query(
     hybrid_k: int = 20,
     voyage_k: int = 5,
     sag_extra: int = 10,
+    rag_k: int | None = None,
     hops: int = 1,
     min_sim: float = 0.6,
     use_sag: bool = True,
     voyage_client: Any | None = None,
     generate_fn: GenerateFn | None = None,
     retrieve_fn: RetrieveFn | None = None,
+    query_extract_fn: QueryExtractFn | None = None,
 ) -> ChatResult:
     """Run retrieval → draft. Inject retrieve_fn / generate_fn for offline tests.
 
-    ``use_sag=False`` is the traditional RAG baseline: Voyage shortlist only
-    (same as ``--no-sag`` on the finance script).
+    ``use_sag=False`` is the RAG baseline: Voyage shortlist only (no expand).
+    Pack size defaults to ``voyage_k + sag_extra`` (15) so RAG matches SAG's
+    typical evidence budget; override with ``rag_k=``.
     """
     cleaned = query.strip()
     if not cleaned:
@@ -173,21 +210,27 @@ def answer_query(
         )
 
     active = bundle if bundle is not None else get_corpus(min_sim=min_sim)
+    effective_k = (
+        voyage_k
+        if use_sag
+        else (rag_k if rag_k is not None else voyage_k + sag_extra)
+    )
 
     if retrieve_fn is not None:
         evidence = retrieve_fn(cleaned, active)
-        seeds = evidence[:voyage_k]
+        seeds = evidence[:effective_k]
     else:
         seeds, evidence = _default_retrieve(
             cleaned,
             active,
             hybrid_k=hybrid_k,
-            voyage_k=voyage_k,
+            voyage_k=effective_k,
             sag_extra=sag_extra,
             hops=hops,
             min_sim=min_sim,
             use_sag=use_sag,
             voyage_client=voyage_client,
+            query_extract_fn=query_extract_fn,
         )
 
     seed_ids = {c.chunk_id for c in seeds}
@@ -233,12 +276,18 @@ def compare_query(
     hybrid_k: int = 20,
     voyage_k: int = 5,
     sag_extra: int = 10,
+    rag_k: int | None = None,
     hops: int = 1,
     min_sim: float = 0.6,
     voyage_client: Any | None = None,
     generate_fn: GenerateFn | None = None,
+    query_extract_fn: QueryExtractFn | None = None,
 ) -> tuple[ChatResult, ChatResult]:
-    """Same Voyage seeds → RAG baseline + SAG expansion (fair ablation)."""
+    """K-matched ablation: RAG = Voyage top-(voyage_k+sag_extra); SAG = top-voyage_k + expand.
+
+    One hybrid → one Voyage call (depth = RAG budget). RAG keeps the deep
+    shortlist; SAG keeps only the first ``voyage_k`` as seeds then expands.
+    """
     cleaned = query.strip()
     if not cleaned:
         empty = ChatResult(
@@ -255,27 +304,36 @@ def compare_query(
         )
 
     active = bundle if bundle is not None else get_corpus(min_sim=min_sim)
-    seeds, _rag_evidence = _default_retrieve(
+    rag_budget = rag_k if rag_k is not None else voyage_k + sag_extra
+    hybrid_hits = search_hybrid(
+        cleaned, active.chunks, k=hybrid_k, vectors=active.vectors
+    )
+    voyage_hits = rerank(
         cleaned,
-        active,
-        hybrid_k=hybrid_k,
-        voyage_k=voyage_k,
-        sag_extra=sag_extra,
-        hops=hops,
-        min_sim=min_sim,
-        use_sag=False,
-        voyage_client=voyage_client,
+        [hit.chunk for hit in hybrid_hits],
+        top_k=max(rag_budget, voyage_k),
+        client=voyage_client,
+    )
+    ranked = [hit.chunk for hit in voyage_hits]
+    rag_evidence = ranked[:rag_budget]
+    sag_seeds = ranked[:voyage_k]
+    sag_seeds = _augment_seeds_with_query(
+        cleaned, sag_seeds, active.index, query_extract_fn=query_extract_fn
     )
     sag_evidence = expand(
-        seeds,
+        sag_seeds,
         active.index,
         max_extra=sag_extra,
         hops=hops,
         min_sim=min_sim,
     )
 
-    def _finish(evidence: list[LegalChunk], use_sag: bool) -> ChatResult:
-        seed_ids = {c.chunk_id for c in seeds}
+    def _finish(
+        evidence: list[LegalChunk],
+        use_sag: bool,
+        seed_list: list[LegalChunk],
+    ) -> ChatResult:
+        seed_ids = {c.chunk_id for c in seed_list}
         draft = generate_draft(
             cleaned, evidence, generate_fn=generate_fn, seed_ids=seed_ids
         )
@@ -299,16 +357,19 @@ def compare_query(
             abstained=draft.abstained,
             cited=cited,
             stats=ChatStats(
-                seed_count=len(seeds),
+                seed_count=len(seed_list),
                 context_count=len(evidence),
                 sag_added=len([c for c in evidence if c.chunk_id not in seed_ids]),
             ),
             use_sag=use_sag,
         )
 
-    return _finish(list(seeds), False), _finish(sag_evidence, True)
+    return (
+        _finish(rag_evidence, False, rag_evidence),
+        _finish(sag_evidence, True, sag_seeds),
+    )
 
 
 def keys_configured() -> tuple[bool, bool]:
     settings = get_settings()
-    return settings.voyage_configured, settings.qwen_configured
+    return settings.voyage_configured, settings.openai_configured

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Smoke-test Qwen extraction on a few real finance-pack chunks.
 
-Requires QWEN_API_KEY in .env. Writes/reads a small cache so reruns are free.
+Requires OPENAI_API_KEY in .env. Writes/reads a small cache so reruns are free.
 
 Usage (repo root, venv on):
   python scripts/smoke_qwen_extract.py
@@ -34,8 +34,8 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=3)
     args = parser.parse_args()
 
-    if not get_settings().qwen_configured:
-        raise SystemExit("QWEN_API_KEY is not set. Put it in .env at the repo root.")
+    if not get_settings().openai_configured:
+        raise SystemExit("OPENAI_API_KEY is not set. Put it in .env at the repo root.")
     if not RAW_JSON.is_file():
         raise SystemExit(f"Missing corpus: {RAW_JSON}")
 
@@ -45,7 +45,7 @@ def main() -> None:
     if not sample:
         raise SystemExit("None of the seed chunk ids were found in the finance pack.")
 
-    print(f"Extracting {len(sample)} chunks with {get_settings().qwen_model}…")
+    print(f"Extracting {len(sample)} chunks with {get_settings().openai_model}…")
     extractions = extract_chunks(sample, cache_path=CACHE)
     concepts = concept_keys_by_chunk(extractions)
 

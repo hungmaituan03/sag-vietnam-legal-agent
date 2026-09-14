@@ -5,7 +5,7 @@ Requires:
   - data/raw/uts_vlc_processed.json
   - VOYAGE_API_KEY in .env (real rerank; no fake client)
   - sentence-transformers (dense stage uses the multilingual MiniLM)
-  - QWEN_API_KEY in .env when using --qwen / --qwen-all / --answer
+  - OPENAI_API_KEY in .env when using --qwen / --qwen-all / --answer
 
 Usage (repo root, venv on):
   python scripts/run_finance_retrieval.py
@@ -31,6 +31,8 @@ from sag_legal.sag import (
     concept_keys_by_chunk,
     expand,
     extract_chunks,
+    extract_query,
+    seeds_with_query_concepts,
 )
 from sag_legal.settings import get_settings
 
@@ -115,6 +117,15 @@ def main() -> None:
         default=10,
         help="Max chunks SAG may add behind the reranked seeds.",
     )
+    parser.add_argument(
+        "--rag-k",
+        type=int,
+        default=None,
+        help=(
+            "Evidence size for --no-sag (RAG-only). "
+            "Default: voyage-k + sag-extra (15) for a K-matched comparison."
+        ),
+    )
     parser.add_argument("--hops", type=int, default=1, help="Frontier depth.")
     parser.add_argument(
         "--min-sim",
@@ -160,9 +171,9 @@ def main() -> None:
         raise SystemExit(
             "VOYAGE_API_KEY is not set. Put it in .env at the repo root."
         )
-    if need_qwen and not settings.qwen_configured:
+    if need_qwen and not settings.openai_configured:
         raise SystemExit(
-            "QWEN_API_KEY is not set. Put it in .env, or drop "
+            "OPENAI_API_KEY is not set. Put it in .env, or drop "
             "--qwen / --qwen-all / --answer."
         )
     if not RAW_JSON.is_file():
@@ -186,7 +197,7 @@ def main() -> None:
     print("Voyage: live API", flush=True)
     if use_qwen:
         scope = "full corpus" if args.qwen_all else "hybrid shortlist"
-        print(f"Qwen: {settings.qwen_model} on {scope}", flush=True)
+        print(f"OpenAI: {settings.openai_model} on {scope}", flush=True)
 
     print("Embedding corpus (cached after the first run)…", flush=True)
     vectors = embed_chunks(chunks, cache_path=CACHE_NPZ)
@@ -197,17 +208,29 @@ def main() -> None:
     hybrid_hits = search_hybrid(args.query, chunks, k=args.hybrid_k, vectors=vectors)
     print_hits("2) HYBRID RRF (shortlist → Voyage)", hybrid_hits, titles)
 
+    # K-matched RAG: Voyage depth = voyage-k + sag-extra (default 15).
+    rag_budget = (
+        args.rag_k if args.rag_k is not None else args.voyage_k + args.sag_extra
+    )
+    voyage_top_k = rag_budget if args.no_sag else args.voyage_k
     voyage_hits = rerank(
         args.query,
         [hit.chunk for hit in hybrid_hits],
-        top_k=args.voyage_k,
+        top_k=voyage_top_k,
     )
-    print_hits("3) VOYAGE (live rerank-2.5)", voyage_hits, titles)
+    print_hits(
+        f"3) VOYAGE (live rerank-2.5, top_k={voyage_top_k})",
+        voyage_hits,
+        titles,
+    )
 
     evidence: list[LegalChunk]
     if args.no_sag:
         evidence = [hit.chunk for hit in voyage_hits]
-        print("\n(--no-sag): Voyage shortlist is the whole context.")
+        print(
+            f"\n(--no-sag): RAG evidence = Voyage top-{len(evidence)} "
+            f"(K-matched vs SAG's {args.voyage_k}+{args.sag_extra})."
+        )
     else:
         concepts: dict[str, list[str]] | None = None
         if use_qwen:
@@ -215,14 +238,14 @@ def main() -> None:
                 chunks if args.qwen_all else [hit.chunk for hit in hybrid_hits]
             )
             print(
-                f"\nQwen extracting {len(to_extract)} chunks "
+                f"\nOpenAI extracting {len(to_extract)} chunks "
                 f"(cache: {QWEN_CACHE.name})…",
                 flush=True,
             )
             extractions = extract_chunks(to_extract, cache_path=QWEN_CACHE)
             concepts = concept_keys_by_chunk(extractions)
             print_extractions(
-                f"3.5) QWEN extract ({settings.qwen_model})",
+                f"3.5) OpenAI extract ({settings.openai_model})",
                 [hit.chunk for hit in voyage_hits],
                 extractions,
                 titles,
@@ -250,6 +273,15 @@ def main() -> None:
         )
 
         seeds = [hit.chunk for hit in voyage_hits]
+        if use_qwen:
+            query_extraction = extract_query(args.query)
+            query_keys = query_extraction.concept_keys()
+            print(
+                f"\nQuery concepts ({settings.openai_model}): "
+                f"{query_keys or '(none)'}",
+                flush=True,
+            )
+            seeds = seeds_with_query_concepts(query_keys, seeds, index)
         seed_ids = {chunk.chunk_id for chunk in seeds}
         evidence = expand(
             seeds,
@@ -260,7 +292,9 @@ def main() -> None:
             use_concepts=use_qwen,
         )
         stage = (
-            "4) SAG expansion (+Qwen concepts)" if use_qwen else "4) SAG expansion"
+            "4) SAG expansion (+query/chunk concepts)"
+            if use_qwen
+            else "4) SAG expansion"
         )
         print_context(stage, evidence, seed_ids, titles)
 
@@ -276,7 +310,7 @@ def main() -> None:
         return
 
     print(
-        f"\n=== 5) LLM DRAFT ({settings.qwen_model}, "
+        f"\n=== 5) LLM DRAFT ({settings.openai_model}, "
         f"{len(evidence)} evidence chunks) ===",
         flush=True,
     )

@@ -89,7 +89,7 @@ def _arm_from_result(result: ChatResult) -> ArmOut:
 @app.on_event("startup")
 def _warm_corpus() -> None:
     """Load corpus in the background of startup when files/keys allow."""
-    voyage_ok, _qwen_ok = keys_configured()
+    voyage_ok, _openai_ok = keys_configured()
     if corpus_ready() and voyage_ok:
         try:
             get_corpus()
@@ -100,28 +100,28 @@ def _warm_corpus() -> None:
 
 @app.get("/api/health")
 def health() -> dict[str, object]:
-    voyage_ok, qwen_ok = keys_configured()
-    ready = corpus_ready() and voyage_ok and qwen_ok
+    voyage_ok, openai_ok = keys_configured()
+    ready = corpus_ready() and voyage_ok and openai_ok
     return {
         "status": "ok" if ready else "degraded",
         "corpus": corpus_ready(),
         "voyage": voyage_ok,
-        "qwen": qwen_ok,
+        "openai": openai_ok,
     }
 
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(body: ChatRequest) -> ChatResponse:
-    voyage_ok, qwen_ok = keys_configured()
+    voyage_ok, openai_ok = keys_configured()
     if not corpus_ready():
         raise HTTPException(
             status_code=503,
             detail="Corpus missing. Place data/raw/uts_vlc_processed.json.",
         )
-    if not voyage_ok or not qwen_ok:
+    if not voyage_ok or not openai_ok:
         raise HTTPException(
             status_code=503,
-            detail="Set VOYAGE_API_KEY and QWEN_API_KEY in .env.",
+            detail="Set VOYAGE_API_KEY and OPENAI_API_KEY in .env.",
         )
     try:
         if body.mode == "compare":
@@ -129,6 +129,7 @@ def chat(body: ChatRequest) -> ChatResponse:
             rag, sag = compare_query(body.query, bundle=get_corpus())
             arms = [_arm_from_result(rag), _arm_from_result(sag)]
         elif body.mode == "rag":
+            # K-matched vs SAG (5 seeds + 10 expand): Voyage top-15.
             arms = [_arm_from_result(answer_query(body.query, use_sag=False))]
         else:
             arms = [_arm_from_result(answer_query(body.query, use_sag=True))]

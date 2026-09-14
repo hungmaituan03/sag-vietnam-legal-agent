@@ -14,7 +14,11 @@ from sag_legal.sag import (
     expand,
     extract_chunk,
     extract_chunks,
+    extract_query,
+    lookup_by_concepts,
+    merge_seeds,
     normalize_entity_name,
+    seeds_with_query_concepts,
 )
 
 
@@ -120,3 +124,66 @@ def test_build_index_joins_chunks_that_share_a_concept():
 
     out = expand([a], index, max_extra=5, use_semantic=False)
     assert b.chunk_id in {c.chunk_id for c in out}
+
+
+def fake_query_extract(query: str) -> ChunkExtraction:
+    return ChunkExtraction(
+        chunk_id="query",
+        entities=[
+            ExtractedEntity(
+                name="kiểm kê tài sản",
+                type="obligation",
+                aliases=["kiểm kê"],
+            )
+        ],
+    )
+
+
+def test_extract_query_uses_injectable_fn():
+    out = extract_query("Khi nào phải kiểm kê tài sản?", extract_fn=fake_query_extract)
+    assert out.chunk_id == "query"
+    assert "concept::kiểm kê tài sản" in out.concept_keys()
+
+
+def test_parse_extraction_keeps_at_most_one_event():
+    from sag_legal.sag.extract import _parse_extraction
+
+    raw = json.dumps(
+        {
+            "events": [
+                {"event_id": "first", "summary": "A"},
+                {"event_id": "second", "summary": "B"},
+            ],
+            "entities": [{"name": "kiểm kê tài sản", "type": "obligation"}],
+        },
+        ensure_ascii=False,
+    )
+    out = _parse_extraction("chunk-x", raw)
+    assert len(out.events) == 1
+    assert out.events[0].event_id == "first"
+    assert len(out.entities) == 1
+
+
+def test_query_concepts_seed_chunks_missing_from_voyage_shortlist():
+    """Query extract joins a cross-law chunk Voyage never seeded."""
+    a = _chunk("luat-ke-toan", "Điều 40", "a) Cuối kỳ kế toán năm;", "Khoản 2")
+    b = _chunk(
+        "law-2020-luat-doanh-nghiep",
+        "Điều 128",
+        "b) Có báo cáo liên quan kiểm kê tài sản.",
+        "Khoản 3",
+    )
+    concepts = concept_keys_by_chunk(extract_chunks([a, b], extract_fn=fake_extract))
+    index = build_index([a, b], concepts=concepts)
+
+    voyage_seeds = [a]
+    query_keys = extract_query("kiểm kê tài sản?", extract_fn=fake_query_extract).concept_keys()
+    hits = lookup_by_concepts(query_keys, index)
+    assert b.chunk_id in {c.chunk_id for c in hits}
+
+    seeds = seeds_with_query_concepts(query_keys, voyage_seeds, index)
+    assert [c.chunk_id for c in seeds] == [a.chunk_id, b.chunk_id]
+
+    merged = merge_seeds([a], [a, b])
+    assert [c.chunk_id for c in merged] == [a.chunk_id, b.chunk_id]
+
