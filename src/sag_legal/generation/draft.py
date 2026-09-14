@@ -4,13 +4,15 @@ Index-time OpenAI extraction (sag.extract) builds concept joins.
 This module is a different LLM job: turn the evidence pack into a
 Vietnamese answer with citations. Hindsight stays out of scope for v0.
 
+Invalid model output raises ``InvalidDraftError`` so callers can stop
+(no soft fake answer, no follow-up LLM spend on garbage).
+
 CI stays offline via injectable `client=` / `generate_fn=` fakes.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,6 +25,10 @@ GenerateFn = Callable[[str, Sequence[LegalChunk]], "DraftAnswer"]
 # truncates JSON or writes overly short answers.
 DEFAULT_MAX_EVIDENCE = 10
 DEFAULT_MAX_CHUNK_CHARS = 600
+
+
+class InvalidDraftError(ValueError):
+    """Raised when the draft LLM returns unusable JSON / citations."""
 
 
 @dataclass
@@ -185,64 +191,48 @@ def _strip_fences(content: str) -> str:
     return text
 
 
-def _repair_truncated_json(text: str) -> str:
-    """Best-effort close for truncated model JSON (common when evidence is large)."""
-    if not text or text.lstrip().startswith("{"):
-        candidate = text.strip()
-    else:
-        start = text.find("{")
-        candidate = text[start:].strip() if start >= 0 else text.strip()
-    if not candidate:
-        return candidate
-    # If answer string is open, close it before repairing braces.
-    if candidate.count('"') % 2 == 1:
-        candidate += '"'
-    open_braces = candidate.count("{") - candidate.count("}")
-    open_brackets = candidate.count("[") - candidate.count("]")
-    candidate += "]" * max(open_brackets, 0)
-    candidate += "}" * max(open_braces, 0)
-    return candidate
-
-
 def _parse_draft(content: str, allowed_ids: set[str]) -> DraftAnswer:
+    """Parse and validate draft JSON. Raises ``InvalidDraftError`` if unusable."""
     text = _strip_fences(content)
-    data: dict[str, Any] | None = None
     try:
         data = json.loads(text)
-    except json.JSONDecodeError:
-        try:
-            data = json.loads(_repair_truncated_json(text))
-        except json.JSONDecodeError:
-            match = re.search(r'"answer"\s*:\s*"(.*?)(?<!\\)"', text, re.DOTALL)
-            if match:
-                answer = (
-                    match.group(1)
-                    .replace("\\n", "\n")
-                    .replace('\\"', '"')
-                    .replace("\\\\", "\\")
-                    .strip()
-                )
-                return DraftAnswer(
-                    answer=answer or "Không đủ căn cứ trong evidence để trả lời.",
-                    cited_chunk_ids=[],
-                    abstained=not bool(answer),
-                )
-            return DraftAnswer(
-                answer=(
-                    "Mô hình trả về JSON không hợp lệ; không thể soạn câu trả lời. "
-                    "Thử lại hoặc giảm số evidence."
-                ),
-                cited_chunk_ids=[],
-                abstained=True,
-            )
+    except json.JSONDecodeError as exc:
+        raise InvalidDraftError(
+            "Draft model returned invalid JSON; refusing to spend more tokens "
+            f"on a bad answer ({exc})."
+        ) from exc
 
-    raw_ids = data.get("cited_chunk_ids") or []
-    cited = [str(cid) for cid in raw_ids if str(cid) in allowed_ids]
-    abstained = bool(data.get("abstained"))
+    if not isinstance(data, dict):
+        raise InvalidDraftError("Draft JSON must be an object.")
+
+    if "answer" not in data or "abstained" not in data:
+        raise InvalidDraftError(
+            "Draft JSON missing required keys: answer, abstained."
+        )
+
     answer = str(data.get("answer") or "").strip()
+    abstained = bool(data.get("abstained"))
+    raw_ids = data.get("cited_chunk_ids")
+    if raw_ids is None:
+        raw_ids = []
+    if not isinstance(raw_ids, list):
+        raise InvalidDraftError("cited_chunk_ids must be a list.")
+
+    cited = [str(cid) for cid in raw_ids if str(cid) in allowed_ids]
+    unknown = [str(cid) for cid in raw_ids if str(cid) not in allowed_ids]
+
     if not answer:
-        abstained = True
-        answer = "Không đủ căn cứ trong evidence để trả lời."
+        raise InvalidDraftError("Draft answer is empty.")
+
+    if not abstained and not cited:
+        detail = (
+            f" unknown ids dropped={unknown!r}" if unknown else " no citations given"
+        )
+        raise InvalidDraftError(
+            "Non-abstained draft must cite at least one evidence chunk_id;"
+            f"{detail}."
+        )
+
     return DraftAnswer(answer=answer, cited_chunk_ids=cited, abstained=abstained)
 
 
@@ -257,7 +247,11 @@ def generate_draft(
     max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
     seed_ids: set[str] | None = None,
 ) -> DraftAnswer:
-    """Draft a user-facing answer from SAG (or Voyage) evidence chunks."""
+    """Draft a user-facing answer from SAG (or Voyage) evidence chunks.
+
+    Raises ``InvalidDraftError`` when the model output fails validation
+    (bad JSON, empty answer, or answer without evidence citations).
+    """
     if generate_fn is not None:
         return generate_fn(query, evidence)
 

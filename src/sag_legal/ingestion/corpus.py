@@ -29,7 +29,14 @@ from sag_legal.models import (
 #   Bộ luật Lao động, Phòng chống rửa tiền.
 # Not in this JSON dump (follow-up corpus work):
 #   Thông tư / Nghị định hướng dẫn; separate "niêm yết" instruments.
-#   Avoid id code-2019-bo-luat-lao-dong — corrupt body in the dump.
+# Rows to skip when loading the full dump (corrupt / empty content).
+SKIP_DOC_IDS: frozenset[str] = frozenset(
+    {
+        "code-2019-bo-luat-lao-dong",  # corrupt body in the dump
+        "luat-ban-hanh-van-ban-quy-pham-phap-luat",  # empty content
+    }
+)
+
 KHUNG1_DOC_IDS: tuple[str, ...] = (
     # Core banking / credit / accounting (demo aliases already in use)
     "luat-cac-to-chuc-tin-dung",
@@ -129,15 +136,61 @@ def row_to_document(row: dict) -> LegalDocument:
     )
 
 
+def list_corpus_doc_ids(
+    path: Path | str,
+    *,
+    skip: frozenset[str] | set[str] | None = None,
+) -> tuple[str, ...]:
+    """Return every usable document id in the JSON dump (stable file order).
+
+    Skips ``SKIP_DOC_IDS`` and rows with empty ``content`` so ingest does not
+    fail halfway through a full-corpus load.
+    """
+    corpus_path = Path(path)
+    if not corpus_path.is_file():
+        raise FileNotFoundError(f"Missing corpus: {corpus_path}")
+
+    with corpus_path.open(encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload, list):
+        raise ValueError(f"Expected a JSON list, got {type(payload).__name__}")
+
+    skip_ids = SKIP_DOC_IDS if skip is None else frozenset(skip)
+    ids: list[str] = []
+    seen: set[str] = set()
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        doc_id = row.get("id")
+        if not doc_id or doc_id in seen or doc_id in skip_ids:
+            continue
+        content = row.get("content") or ""
+        if not str(content).strip():
+            continue
+        seen.add(doc_id)
+        ids.append(doc_id)
+    return tuple(ids)
+
+
 def ingest_corpus(
     path: Path | str,
     doc_ids: tuple[str, ...] | list[str] | None = None,
+    *,
+    all_docs: bool = False,
 ) -> list[IngestResult]:
-    """Load selected JSON rows, map to LegalDocument, then chunk via pipeline."""
-    if doc_ids is None:
+    """Load selected JSON rows, map to LegalDocument, then chunk via pipeline.
+
+    Default is the Khung 1 pack. Pass ``all_docs=True`` (or ``doc_ids`` from
+    ``list_corpus_doc_ids``) to ingest the full dump.
+    """
+    corpus_path = Path(path)
+    if all_docs:
+        if doc_ids is not None:
+            raise ValueError("Pass either all_docs=True or doc_ids=, not both.")
+        doc_ids = list_corpus_doc_ids(corpus_path)
+    elif doc_ids is None:
         doc_ids = KHUNG1_DOC_IDS
 
-    corpus_path = Path(path)
     if not corpus_path.is_file():
         raise FileNotFoundError(f"Missing corpus: {corpus_path}")
 

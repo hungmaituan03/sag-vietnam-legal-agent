@@ -15,10 +15,11 @@ from typing import Any
 import numpy as np
 
 from sag_legal.generation import DraftAnswer, generate_draft
-from sag_legal.ingestion import KHUNG1_DOC_IDS, flatten_chunks, ingest_corpus
+from sag_legal.ingestion import flatten_chunks, ingest_corpus
 from sag_legal.models import LegalChunk
 from sag_legal.reranking import rerank
 from sag_legal.retrieval.embeddings import embed_chunks
+from sag_legal.retrieval.faiss_index import DenseFaissIndex
 from sag_legal.retrieval.hybrid import search_hybrid
 from sag_legal.sag import (
     ChunkExtraction,
@@ -43,8 +44,12 @@ def _repo_root() -> Path:
 
 ROOT = _repo_root()
 RAW_JSON = ROOT / "data" / "raw" / "uts_vlc_processed.json"
-CACHE_NPZ = ROOT / "data" / "processed" / "khung1_embeddings.npz"
+# Full dump embeddings (separate from the smaller Khung 1 cache).
+CACHE_NPZ = ROOT / "data" / "processed" / "full_corpus_embeddings.npz"
+FAISS_PATH = ROOT / "data" / "processed" / "full_corpus.faiss"
 CONCEPT_CACHE = ROOT / "data" / "processed" / "qwen_extract_khung1.json"
+# All-pairs cosine for SAG semantic edges is O(n²); skip above this size.
+SEMANTIC_EDGE_MAX_CHUNKS = 20_000
 
 RetrieveFn = Callable[..., list[LegalChunk]]
 GenerateFn = Callable[[str, Sequence[LegalChunk]], DraftAnswer]
@@ -82,6 +87,24 @@ class CorpusBundle:
     titles: dict[str, str]
     vectors: Mapping[str, np.ndarray]
     index: EventEntityIndex
+    faiss_index: DenseFaissIndex | None = None
+
+
+def _load_or_build_faiss(
+    vectors: Mapping[str, np.ndarray],
+    cache_path: Path,
+) -> DenseFaissIndex:
+    """Reuse on-disk FAISS when present; otherwise build and save."""
+    ids_sidecar = Path(str(cache_path) + ".ids.npy")
+    if cache_path.is_file() and ids_sidecar.is_file():
+        print(f"Loading FAISS index: {cache_path.name}", flush=True)
+        return DenseFaissIndex.load(cache_path)
+
+    print(f"Building FAISS index ({len(vectors)} vectors)…", flush=True)
+    index = DenseFaissIndex.from_vectors(vectors)
+    index.save(cache_path)
+    print(f"Wrote {cache_path.name}", flush=True)
+    return index
 
 
 _bundle: CorpusBundle | None = None
@@ -109,18 +132,47 @@ def get_corpus(
         if not path.is_file():
             raise FileNotFoundError(f"Missing corpus: {path}")
 
-        results = ingest_corpus(path, doc_ids=KHUNG1_DOC_IDS)
+        results = ingest_corpus(path, all_docs=True)
         titles = {r.document.document_id: r.document.title for r in results}
         chunks = flatten_chunks(results)
+        print(
+            f"Corpus: {len(results)} docs → {len(chunks)} chunks "
+            f"(embedding cache: {(cache_npz or CACHE_NPZ).name})",
+            flush=True,
+        )
         vectors = embed_chunks(chunks, cache_path=cache_npz or CACHE_NPZ)
+        faiss_path = FAISS_PATH
+        if cache_npz is not None:
+            faiss_path = cache_npz.with_suffix(".faiss")
+        faiss_index = _load_or_build_faiss(vectors, faiss_path)
         concepts = None
         if CONCEPT_CACHE.is_file():
             concepts = concept_keys_by_chunk(load_extractions(CONCEPT_CACHE))
+        # Dense retrieval still uses `vectors`; SAG semantic edges need all-pairs
+        # cosine and are only safe on the smaller Khung 1-sized packs.
+        sag_vectors = (
+            vectors if len(chunks) <= SEMANTIC_EDGE_MAX_CHUNKS else None
+        )
+        if sag_vectors is None:
+            print(
+                f"SAG semantic edges skipped "
+                f"({len(chunks)} chunks > {SEMANTIC_EDGE_MAX_CHUNKS})",
+                flush=True,
+            )
         index = build_index(
-            chunks, vectors=vectors, min_sim=min_sim, concepts=concepts
+            chunks, vectors=sag_vectors, min_sim=min_sim, concepts=concepts
+        )
+        print(
+            f"SAG index: {len(index.events_by_id)} events, "
+            f"{len(index.events_by_entity)} entities",
+            flush=True,
         )
         _bundle = CorpusBundle(
-            chunks=chunks, titles=titles, vectors=vectors, index=index
+            chunks=chunks,
+            titles=titles,
+            vectors=vectors,
+            index=index,
+            faiss_index=faiss_index,
         )
         return _bundle
 
@@ -154,7 +206,11 @@ def _default_retrieve(
 ) -> tuple[list[LegalChunk], list[LegalChunk]]:
     """Return (seeds, evidence). Seeds are Voyage top-k; evidence is after SAG."""
     hybrid_hits = search_hybrid(
-        query, bundle.chunks, k=hybrid_k, vectors=bundle.vectors
+        query,
+        bundle.chunks,
+        k=hybrid_k,
+        vectors=bundle.vectors,
+        faiss_index=bundle.faiss_index,
     )
     voyage_hits = rerank(
         query,
@@ -306,7 +362,11 @@ def compare_query(
     active = bundle if bundle is not None else get_corpus(min_sim=min_sim)
     rag_budget = rag_k if rag_k is not None else voyage_k + sag_extra
     hybrid_hits = search_hybrid(
-        cleaned, active.chunks, k=hybrid_k, vectors=active.vectors
+        cleaned,
+        active.chunks,
+        k=hybrid_k,
+        vectors=active.vectors,
+        faiss_index=active.faiss_index,
     )
     voyage_hits = rerank(
         cleaned,
@@ -334,8 +394,14 @@ def compare_query(
         seed_list: list[LegalChunk],
     ) -> ChatResult:
         seed_ids = {c.chunk_id for c in seed_list}
+        # Same draft budget as the K-matched pack (default 15), not the
+        # global DEFAULT_MAX_EVIDENCE=10, so RAG and SAG see equal depth.
         draft = generate_draft(
-            cleaned, evidence, generate_fn=generate_fn, seed_ids=seed_ids
+            cleaned,
+            evidence,
+            generate_fn=generate_fn,
+            seed_ids=seed_ids,
+            max_evidence_chunks=rag_budget,
         )
         by_id = {c.chunk_id: c for c in evidence}
         cite_order = list(draft.cited_chunk_ids)

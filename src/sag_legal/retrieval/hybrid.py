@@ -5,6 +5,10 @@ from __future__ import annotations
 from sag_legal.models import LegalChunk
 from sag_legal.retrieval.bm25 import ScoreChunk, search_bm25
 from sag_legal.retrieval.dense import search_dense
+from sag_legal.retrieval.faiss_index import DenseFaissIndex
+
+# Cap BM25/dense candidate lists so full-corpus hybrid stays interactive.
+DEFAULT_CANDIDATE_POOL = 200
 
 
 def rrf_contribution(rank: int, k_rrf: int = 60) -> float:
@@ -19,10 +23,10 @@ def hits_to_ranks(hits: list[ScoreChunk]) -> dict[str, int]:
 
 
 def fuse_rank_maps(
-    bm25_ranks: dict[str, int], 
-    dense_ranks: dict[str, int], 
+    bm25_ranks: dict[str, int],
+    dense_ranks: dict[str, int],
     k_rrf: int = 60,
-    ) -> dict[str, float]:
+) -> dict[str, float]:
     all_ids = set(bm25_ranks) | set(dense_ranks)
     fused: dict[str, float] = {}
     for chunk_id in all_ids:
@@ -54,13 +58,26 @@ def search_hybrid(
     k: int = 5,
     model=None,
     vectors=None,
+    faiss_index: DenseFaissIndex | None = None,
+    candidate_pool: int | None = None,
 ) -> list[ScoreChunk]:
     if not chunks or k <= 0:
         return []
 
-    pool = len(chunks)
+    if candidate_pool is None:
+        pool = min(len(chunks), max(k * 20, DEFAULT_CANDIDATE_POOL))
+    else:
+        pool = min(len(chunks), max(candidate_pool, k))
+
     bm25_hits = search_bm25(query, chunks, k=pool)
-    dense_hits = search_dense(query, chunks, k=pool, model=model, vectors=vectors)
+    dense_hits = search_dense(
+        query,
+        chunks,
+        k=pool,
+        model=model,
+        vectors=vectors,
+        faiss_index=faiss_index,
+    )
 
     bm25_ranks = hits_to_ranks(bm25_hits)
     dense_ranks = hits_to_ranks(dense_hits)
