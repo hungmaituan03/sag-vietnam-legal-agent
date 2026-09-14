@@ -57,3 +57,11 @@ logs/
 *.lance
 *.sqlite
 *.db
+# Local full-corpus eval dump
+eval_rag_vs_sag_full.csv
+
+# Local-only harness (not published to GitHub)
+evaluation/
+notebooks/
+scripts/
+REQUIREMENTS.md

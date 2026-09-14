@@ -6,17 +6,19 @@ Internal research/prototype: **Vietnamese legal information agent** using SQL-Re
 
 ## Repo layout
 
-| Path | Purpose |
-|------|---------|
-| `src/sag_legal/` | Implementation (ingestion → retrieval → SAG → generation → Hindsight) |
-| `configs/` | Experiment / runtime configs (no secrets) |
-| `data/` | Raw + processed corpora (see `data/README.md`) |
-| `tests/` | Unit + integration tests |
-| `evaluation/` | Datasets and benchmark runners |
-| `docs/process/` | How we work in public (commits, PRs, weekly cadence) |
-| `docs/architecture/` | Architecture notes as they evolve |
-| `REQUIREMENTS.md` | Full scope and internship roadmap |
-| `../SAG-docs/` | Optional sibling folder for long-form notebooks/reports/demos |
+
+| Path                 | Purpose                                                               |
+| -------------------- | --------------------------------------------------------------------- |
+| `src/sag_legal/`     | Implementation (ingestion → retrieval → SAG → generation → Hindsight) |
+| `configs/`           | Experiment / runtime configs (no secrets)                             |
+| `data/`              | Raw + processed corpora (see `data/README.md`)                        |
+| `tests/`             | Unit + integration tests                                              |
+| `docs/process/`      | How we work in public (commits, PRs, weekly cadence)                  |
+| `docs/architecture/` | Architecture notes as they evolve                                     |
+| `../SAG-docs/`       | Optional sibling folder for long-form notebooks/reports/demos         |
+
+
+
 
 ## Pipeline (mandatory order)
 
@@ -24,6 +26,8 @@ Internal research/prototype: **Vietnamese legal information agent** using SQL-Re
 Query → Hybrid (BM25 + dense) → Voyage reranker → SAG multi-hop
      → LLM draft → Hindsight → Citation validation → Answer
 ```
+
+
 
 ## Quick start (local)
 
@@ -35,23 +39,18 @@ cp .env.example .env   # fill keys locally — never commit .env
 pytest
 ```
 
+
+
 ### Chat UI (optional)
 
 ```bash
 pip install -e ".[web,dev]"
-python scripts/run_chat_ui.py
+python -m uvicorn sag_legal.chat.app:app --host 127.0.0.1 --port 8000
 # open http://127.0.0.1:8000
 ```
 
-Needs `VOYAGE_API_KEY`, `OPENAI_API_KEY`, and `data/raw/uts_vlc_processed.json`.
+Needs `VOYAGE_API_KEY`, `OPENAI_API_KEY`, and `data/raw/uts_vlc_processed.json`.  
 First run rebuilds `data/processed/khung1_embeddings.npz` for the expanded Khung 1 pack (~14 laws).
-
-## Showing process on GitHub
-
-We use **small commits**, **pull requests**, **weekly milestone issues**, and **CI** so mentors can see progress over time. Read:
-
-- [`docs/process/GITHUB_WORKFLOW.md`](docs/process/GITHUB_WORKFLOW.md)
-- [`docs/process/COMMIT_CONVENTIONS.md`](docs/process/COMMIT_CONVENTIONS.md)
 
 ## Research question
 
