@@ -18,6 +18,7 @@ from sag_legal.chat.pipeline import (
     get_corpus,
     keys_configured,
 )
+from sag_legal.generation import InvalidDraftError
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -133,6 +134,9 @@ def chat(body: ChatRequest) -> ChatResponse:
             arms = [_arm_from_result(answer_query(body.query, use_sag=False))]
         else:
             arms = [_arm_from_result(answer_query(body.query, use_sag=True))]
+    except InvalidDraftError as exc:
+        # Stop the request — do not spend more tokens on a bad draft.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 — surface pipeline failures to UI
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

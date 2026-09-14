@@ -131,7 +131,7 @@ def test_compare_query_k_matched_rag_budget():
         def __init__(self, chunk: LegalChunk) -> None:
             self.chunk = chunk
 
-    def fake_hybrid(query, corpus, k=20, vectors=None):
+    def fake_hybrid(query, corpus, k=20, vectors=None, **_kwargs):
         return [_Hit(a), _Hit(b), _Hit(c)]
 
     def fake_rerank(query, documents, top_k=None, client=None, model=None):

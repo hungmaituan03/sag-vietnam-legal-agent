@@ -25,6 +25,7 @@ dev = [
   "pytest-cov>=5.0.0",
   "ruff>=0.6.0",
   "sentence-transformers>=3.0.0",
+  "faiss-cpu>=1.8.0",
   "jupyter>=1.0.0",
   "ipykernel>=6.0.0",
   "pandas>=2.0.0",
@@ -41,8 +42,8 @@ where = ["src"]
 "sag_legal.chat" = ["static/*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "evaluation/tests"]
-pythonpath = ["src", "."]
+testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100

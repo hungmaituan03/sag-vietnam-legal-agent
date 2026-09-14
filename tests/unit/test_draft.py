@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 from types import SimpleNamespace
 
-from sag_legal.generation import DraftAnswer, generate_draft
+from sag_legal.generation import DraftAnswer, InvalidDraftError, generate_draft
 from sag_legal.generation.draft import select_evidence_for_draft
 from sag_legal.models import LegalChunk
 
@@ -73,7 +73,7 @@ def test_client_json_parsed_and_unknown_ids_dropped():
     assert "Kỳ kế toán năm" in out.answer
 
 
-def test_client_markdown_fence_and_empty_answer_abstains():
+def test_client_markdown_fence_and_empty_answer_raises():
     evidence = [_chunk("luat-ke-toan", "Điều 12", "text")]
     raw = '```json\n{"answer": "", "cited_chunk_ids": [], "abstained": false}\n```'
 
@@ -87,9 +87,11 @@ def test_client_markdown_fence_and_empty_answer_abstains():
                 def create(**_kwargs):
                     return SimpleNamespace(choices=[SimpleNamespace(message=_Msg())])
 
-    out = generate_draft("q?", evidence, client=_FakeClient(), model="fake")
-    assert out.abstained is True
-    assert "Không đủ căn cứ" in out.answer
+    try:
+        generate_draft("q?", evidence, client=_FakeClient(), model="fake")
+        raise AssertionError("expected InvalidDraftError")
+    except InvalidDraftError as exc:
+        assert "empty" in str(exc).lower()
 
 
 def test_select_evidence_caps_seed_first_order():
@@ -151,9 +153,8 @@ def test_select_evidence_prefers_same_article_repairs():
     assert other_heading.chunk_id not in ids
 
 
-def test_truncated_json_still_yields_answer():
+def test_truncated_json_raises_instead_of_soft_repair():
     evidence = [_chunk("luat-ke-toan", "Điều 12", "Kỳ kế toán năm.")]
-    # Truncated mid cited_chunk_ids array — common with large prompts.
     raw = (
         '{\n  "answer": "Kỳ kế toán năm là 12 tháng.",\n'
         '  "cited_chunk_ids": ["luat-ke-toan::Điều12",\n  "absta'
@@ -169,6 +170,33 @@ def test_truncated_json_still_yields_answer():
                 def create(**_kwargs):
                     return SimpleNamespace(choices=[SimpleNamespace(message=_Msg())])
 
-    out = generate_draft("q?", evidence, client=_FakeClient(), model="fake")
-    assert "12 tháng" in out.answer
-    assert out.abstained is False
+    try:
+        generate_draft("q?", evidence, client=_FakeClient(), model="fake")
+        raise AssertionError("expected InvalidDraftError")
+    except InvalidDraftError as exc:
+        assert "invalid json" in str(exc).lower()
+
+
+def test_answer_without_valid_citations_raises():
+    evidence = [_chunk("luat-ke-toan", "Điều 12", "text")]
+    payload = {
+        "answer": "Một câu trả lời không trích dẫn.",
+        "cited_chunk_ids": ["invented::id"],
+        "abstained": False,
+    }
+
+    class _Msg:
+        content = __import__("json").dumps(payload, ensure_ascii=False)
+
+    class _FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**_kwargs):
+                    return SimpleNamespace(choices=[SimpleNamespace(message=_Msg())])
+
+    try:
+        generate_draft("q?", evidence, client=_FakeClient(), model="fake")
+        raise AssertionError("expected InvalidDraftError")
+    except InvalidDraftError as exc:
+        assert "cite" in str(exc).lower()

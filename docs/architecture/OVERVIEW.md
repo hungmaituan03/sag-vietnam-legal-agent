@@ -15,7 +15,6 @@ expands the reranked shortlist.
 - `retrieval.embeddings`: corpus vectors encoded once and cached on disk
 - `sag.index`: event/entity index, structural + semantic edges, bounded
   multi-hop expansion
-- Demos: `scripts/run_finance_retrieval.py`, `scripts/run_sag_evidence.py`
 
 Results and limitations: `docs/experiments/SAG_REPORT.md`.
 
@@ -53,6 +52,5 @@ User Query
 | `generation` | Draft answer from evidence |
 | `citation` | Format/validate citations |
 | `contract_review` | Constrained contract issues (later weeks) |
-| `evaluation` | Metrics helpers |
 
 Update this file whenever an architectural decision lands (and link the PR).

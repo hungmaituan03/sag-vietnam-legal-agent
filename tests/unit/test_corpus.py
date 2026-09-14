@@ -284,3 +284,41 @@ def test_khung1_pack_ids_are_unique_and_exported():
         "law-2012-luat-phong-chong-rua-tien",
     ):
         assert required in KHUNG1_DOC_IDS
+
+
+def test_list_corpus_doc_ids_skips_empty_and_skip_set(tmp_path: Path):
+    from sag_legal.ingestion import SKIP_DOC_IDS, list_corpus_doc_ids
+
+    rows = [
+        {"id": "keep-a", "title": "A", "type": "law", "content": "Điều 1. Có nội dung."},
+        {"id": "empty-x", "title": "E", "type": "law", "content": "  "},
+        {
+            "id": "code-2019-bo-luat-lao-dong",
+            "title": "corrupt",
+            "type": "code",
+            "content": "Điều 1. text",
+        },
+        {"id": "keep-b", "title": "B", "type": "law", "content": "Điều 2. Cũng có."},
+    ]
+    corpus = tmp_path / "mini.json"
+    corpus.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+
+    ids = list_corpus_doc_ids(corpus)
+    assert ids == ("keep-a", "keep-b")
+    assert "code-2019-bo-luat-lao-dong" in SKIP_DOC_IDS
+
+
+def test_ingest_corpus_all_docs(tmp_path: Path):
+    from sag_legal.ingestion import ingest_corpus
+
+    rows = [
+        {"id": "keep-a", "title": "A", "type": "law", "content": "Điều 1. Có nội dung."},
+        {"id": "empty-x", "title": "E", "type": "law", "content": ""},
+        {"id": "keep-b", "title": "B", "type": "law", "content": "Điều 2. Cũng có."},
+    ]
+    corpus = tmp_path / "mini.json"
+    corpus.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+
+    results = ingest_corpus(corpus, all_docs=True)
+    assert [r.document.document_id for r in results] == ["keep-a", "keep-b"]
+    assert sum(len(r.chunks) for r in results) >= 2
