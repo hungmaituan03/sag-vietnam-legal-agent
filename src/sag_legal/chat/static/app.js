@@ -5,10 +5,6 @@ const input = document.getElementById("query");
 const send = document.getElementById("send");
 const statusEl = document.getElementById("status");
 
-/** Last submitted query — used when user picks an org after clarify. */
-let lastQuery = "";
-let lastMode = "sag";
-
 function setStatus(text, isError = false) {
   if (!text) {
     statusEl.hidden = true;
@@ -44,26 +40,11 @@ function selectedMode() {
   return picked ? picked.value : "sag";
 }
 
-function renderOrgPick(arm, query) {
-  if (!arm.needs_org_clarify || !Array.isArray(arm.org_candidates)) {
-    return "";
-  }
-  const buttons = arm.org_candidates
-    .map((c) => {
-      const id = escapeHtml(c.org_id || "");
-      const name = escapeHtml(c.display_name || c.org_id || "");
-      return `<button type="button" class="org-pick" data-org-id="${id}" data-query="${escapeHtml(query)}">${name}</button>`;
-    })
-    .join("");
-  return `<div class="org-picks"><div class="org-picks-label">Chọn tổ chức để tiếp tục:</div>${buttons}</div>`;
-}
-
-function renderArm(arm, query = "") {
+function renderArm(arm) {
   const answer = escapeHtml(arm.answer || "");
   const stats = arm.stats || {};
   let html = `<div class="arm-label">${escapeHtml(arm.label || "")}</div>`;
   html += `<div class="body">${answer}</div>`;
-  html += renderOrgPick(arm, query);
   html += `<div class="meta">Evidence ${stats.context_count ?? "—"} chunks (seeds ${
     stats.seed_count ?? "—"
   }, +SAG ${stats.sag_added ?? "—"}) · bên dưới là căn cứ thô, không phải câu trả lời</div>`;
@@ -84,7 +65,6 @@ function renderArm(arm, query = "") {
 
 function renderAssistant(data) {
   const arms = Array.isArray(data.arms) ? data.arms : [];
-  const query = data.query || lastQuery;
   if (!arms.length) {
     appendMessage("assistant", "Không có kết quả.", "abstained");
     return;
@@ -94,7 +74,7 @@ function renderAssistant(data) {
     const arm = arms[0];
     appendMessage(
       "assistant",
-      renderArm(arm, query),
+      renderArm(arm),
       arm.abstained ? "abstained" : ""
     );
     return;
@@ -104,9 +84,7 @@ function renderAssistant(data) {
     .map((arm) => {
       const cls = arm.use_sag ? "arm sag" : "arm rag";
       const abs = arm.abstained ? " abstained" : "";
-      // Only show org pick once (on first arm) in compare mode.
-      const withPick = arm === arms[0] ? renderArm(arm, query) : renderArm({ ...arm, needs_org_clarify: false }, query);
-      return `<div class="${cls}${abs}">${withPick}</div>`;
+      return `<div class="${cls}${abs}">${renderArm(arm)}</div>`;
     })
     .join("");
   appendMessage(
@@ -116,7 +94,12 @@ function renderAssistant(data) {
   );
 }
 
-async function runChat({ query, mode, orgId = null, showUser = true }) {
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = input.value.trim();
+  if (!query) return;
+
+  const mode = selectedMode();
   const modeNote =
     mode === "compare"
       ? "so sánh RAG vs SAG"
@@ -124,16 +107,11 @@ async function runChat({ query, mode, orgId = null, showUser = true }) {
         ? "RAG (no SAG)"
         : "SAG";
 
-  if (showUser) {
-    const pickNote = orgId ? ` · org=${escapeHtml(orgId)}` : "";
-    appendMessage(
-      "user",
-      `${escapeHtml(query)}<div class="meta">Chế độ: ${escapeHtml(modeNote)}${pickNote}</div>`
-    );
-  }
-
-  lastQuery = query;
-  lastMode = mode;
+  appendMessage(
+    "user",
+    `${escapeHtml(query)}<div class="meta">Chế độ: ${escapeHtml(modeNote)}</div>`
+  );
+  input.value = "";
   send.disabled = true;
   setStatus(
     mode === "compare"
@@ -141,14 +119,11 @@ async function runChat({ query, mode, orgId = null, showUser = true }) {
       : "Đang truy xuất và soạn trả lời… (lần đầu có thể chậm)"
   );
 
-  const body = { query, mode };
-  if (orgId) body.org_id = orgId;
-
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ query, mode }),
     });
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -174,29 +149,6 @@ async function runChat({ query, mode, orgId = null, showUser = true }) {
     send.disabled = false;
     input.focus();
   }
-}
-
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const query = input.value.trim();
-  if (!query) return;
-  input.value = "";
-  await runChat({ query, mode: selectedMode(), showUser: true });
-});
-
-thread.addEventListener("click", async (event) => {
-  const btn = event.target.closest("button.org-pick");
-  if (!btn) return;
-  const orgId = btn.getAttribute("data-org-id");
-  const query = btn.getAttribute("data-query") || lastQuery;
-  if (!orgId || !query) return;
-  btn.disabled = true;
-  await runChat({
-    query,
-    mode: lastMode || selectedMode(),
-    orgId,
-    showUser: true,
-  });
 });
 
 input.addEventListener("keydown", (event) => {

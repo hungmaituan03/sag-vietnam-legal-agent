@@ -30,10 +30,6 @@ ChatMode = Literal["sag", "rag", "compare"]
 class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
     mode: ChatMode = "sag"
-    org_id: str | None = Field(
-        default=None,
-        description="Lock org after clarify re-run (skips ambiguous resolve).",
-    )
 
 
 class CitedOut(BaseModel):
@@ -50,11 +46,6 @@ class ChatStatsOut(BaseModel):
     sag_added: int
 
 
-class OrgCandidateOut(BaseModel):
-    org_id: str
-    display_name: str
-
-
 class ArmOut(BaseModel):
     """One retrieval+draft arm (SAG or traditional RAG)."""
 
@@ -64,15 +55,11 @@ class ArmOut(BaseModel):
     abstained: bool
     cited: list[CitedOut]
     stats: ChatStatsOut
-    needs_org_clarify: bool = False
-    org_candidates: list[OrgCandidateOut] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
     mode: ChatMode
     arms: list[ArmOut]
-    # Echo query so UI can re-submit with org_id without retyping.
-    query: str = ""
 
 
 def _arm_from_result(result: ChatResult) -> ArmOut:
@@ -97,11 +84,6 @@ def _arm_from_result(result: ChatResult) -> ArmOut:
             context_count=result.stats.context_count,
             sag_added=result.stats.sag_added,
         ),
-        needs_org_clarify=result.needs_org_clarify,
-        org_candidates=[
-            OrgCandidateOut(org_id=c.org_id, display_name=c.display_name)
-            for c in result.org_candidates
-        ],
     )
 
 
@@ -145,34 +127,20 @@ def chat(body: ChatRequest) -> ChatResponse:
     try:
         if body.mode == "compare":
             # One Voyage shortlist, then RAG vs SAG draft (fair ablation).
-            rag, sag = compare_query(
-                body.query, bundle=get_corpus(), org_id=body.org_id
-            )
+            rag, sag = compare_query(body.query, bundle=get_corpus())
             arms = [_arm_from_result(rag), _arm_from_result(sag)]
         elif body.mode == "rag":
             # K-matched vs SAG (5 seeds + 10 expand): Voyage top-15.
-            arms = [
-                _arm_from_result(
-                    answer_query(
-                        body.query, use_sag=False, org_id=body.org_id
-                    )
-                )
-            ]
+            arms = [_arm_from_result(answer_query(body.query, use_sag=False))]
         else:
-            arms = [
-                _arm_from_result(
-                    answer_query(
-                        body.query, use_sag=True, org_id=body.org_id
-                    )
-                )
-            ]
+            arms = [_arm_from_result(answer_query(body.query, use_sag=True))]
     except InvalidDraftError as exc:
         # Stop the request — do not spend more tokens on a bad draft.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 — surface pipeline failures to UI
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    return ChatResponse(mode=body.mode, arms=arms, query=body.query)
+    return ChatResponse(mode=body.mode, arms=arms)
 
 
 @app.get("/")

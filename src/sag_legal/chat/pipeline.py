@@ -18,7 +18,6 @@ from sag_legal.generation import DraftAnswer, generate_draft
 from sag_legal.ingestion import flatten_chunks, ingest_corpus
 from sag_legal.models import LegalChunk
 from sag_legal.org import fetch_org_docs, merge_evidence, resolve_orgs
-from sag_legal.org.resolve import lookup_org
 from sag_legal.reranking import rerank
 from sag_legal.retrieval.embeddings import embed_chunks
 from sag_legal.retrieval.faiss_index import DenseFaissIndex
@@ -75,28 +74,12 @@ class ChatStats:
 
 
 @dataclass
-class OrgCandidate:
-    org_id: str
-    display_name: str
-
-
-@dataclass
-class OrgClarify:
-    """Ambiguous org match — caller should abstain and show candidates."""
-
-    prompt: str
-    candidates: list[OrgCandidate]
-
-
-@dataclass
 class ChatResult:
     answer: str
     abstained: bool
     cited: list[CitedChunk] = field(default_factory=list)
     stats: ChatStats = field(default_factory=lambda: ChatStats(0, 0, 0))
     use_sag: bool = True
-    needs_org_clarify: bool = False
-    org_candidates: list[OrgCandidate] = field(default_factory=list)
 
 
 @dataclass
@@ -255,49 +238,12 @@ def _default_retrieve(
 def _apply_org_evidence(
     query: str,
     evidence: list[LegalChunk],
-    *,
-    org_id: str | None = None,
-) -> list[LegalChunk] | OrgClarify:
-    """Merge org docs into evidence, or return clarify signal if ambiguous.
-
-    When ``org_id`` is set (user re-run after clarify), skip resolve and fetch
-    that org. Unknown ``org_id`` leaves evidence unchanged.
-    """
-    if org_id is not None:
-        ref = lookup_org(org_id)
-        if ref is None:
-            return evidence
-        return merge_evidence(evidence, fetch_org_docs(ref))
-
+) -> list[LegalChunk]:
+    """If the query names Company A (COA), append its stub docs to evidence."""
     refs = resolve_orgs(query)
-    if any(r.needs_clarify for r in refs):
-        return OrgClarify(
-            prompt=refs[0].clarify_prompt,
-            candidates=[
-                OrgCandidate(org_id=r.org_id, display_name=r.display_name)
-                for r in refs
-            ],
-        )
-    if refs:
-        return merge_evidence(evidence, fetch_org_docs(refs[0]))
-    return evidence
-
-
-def _clarify_result(
-    clarify: OrgClarify,
-    *,
-    seeds: list[LegalChunk],
-    evidence: list[LegalChunk],
-    use_sag: bool,
-) -> ChatResult:
-    return ChatResult(
-        answer=clarify.prompt,
-        abstained=True,
-        stats=ChatStats(len(seeds), len(evidence), 0),
-        use_sag=use_sag,
-        needs_org_clarify=True,
-        org_candidates=list(clarify.candidates),
-    )
+    if not refs:
+        return evidence
+    return merge_evidence(evidence, fetch_org_docs(refs[0]))
 
 
 def answer_query(
@@ -315,15 +261,12 @@ def answer_query(
     generate_fn: GenerateFn | None = None,
     retrieve_fn: RetrieveFn | None = None,
     query_extract_fn: QueryExtractFn | None = None,
-    org_id: str | None = None,
 ) -> ChatResult:
     """Run retrieval → draft. Inject retrieve_fn / generate_fn for offline tests.
 
     ``use_sag=False`` is the RAG baseline: Voyage shortlist only (no expand).
     Pack size defaults to ``voyage_k + sag_extra`` (15) so RAG matches SAG's
     typical evidence budget; override with ``rag_k=``.
-
-    ``org_id`` locks org fetch after a clarify re-run (skips ambiguous resolve).
     """
     cleaned = query.strip()
     if not cleaned:
@@ -357,12 +300,7 @@ def answer_query(
             voyage_client=voyage_client,
             query_extract_fn=query_extract_fn,
         )
-    applied = _apply_org_evidence(cleaned, evidence, org_id=org_id)
-    if isinstance(applied, OrgClarify):
-        return _clarify_result(
-            applied, seeds=seeds, evidence=evidence, use_sag=use_sag
-        )
-    evidence = applied
+    evidence = _apply_org_evidence(cleaned, evidence)
 
     seed_ids = {c.chunk_id for c in seeds}
     draft = generate_draft(
@@ -413,7 +351,6 @@ def compare_query(
     voyage_client: Any | None = None,
     generate_fn: GenerateFn | None = None,
     query_extract_fn: QueryExtractFn | None = None,
-    org_id: str | None = None,
 ) -> tuple[ChatResult, ChatResult]:
     """K-matched ablation: RAG = Voyage top-(voyage_k+sag_extra); SAG = top-voyage_k + expand.
 
@@ -464,26 +401,13 @@ def compare_query(
         min_sim=min_sim,
     )
 
-    # Shared org gate: ambiguous → both arms abstain with the same prompt.
-    org_probe = _apply_org_evidence(cleaned, [], org_id=org_id)
-    if isinstance(org_probe, OrgClarify):
-        clarify_rag = _clarify_result(
-            org_probe, seeds=[], evidence=[], use_sag=False
-        )
-        clarify_sag = _clarify_result(
-            org_probe, seeds=[], evidence=[], use_sag=True
-        )
-        return clarify_rag, clarify_sag
-
     def _finish(
         evidence: list[LegalChunk],
         use_sag: bool,
         seed_list: list[LegalChunk],
     ) -> ChatResult:
         before = len(evidence)
-        applied = _apply_org_evidence(cleaned, evidence, org_id=org_id)
-        # Clarify already handled above; applied is always a list here.
-        evidence = applied if isinstance(applied, list) else evidence
+        evidence = _apply_org_evidence(cleaned, evidence)
         org_extra = len(evidence) - before
         seed_ids = {c.chunk_id for c in seed_list}
         # Same draft budget as the K-matched pack (default 15), not the
