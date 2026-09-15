@@ -17,6 +17,7 @@ import numpy as np
 from sag_legal.generation import DraftAnswer, generate_draft
 from sag_legal.ingestion import flatten_chunks, ingest_corpus
 from sag_legal.models import LegalChunk
+from sag_legal.org import fetch_org_docs, merge_evidence, resolve_orgs
 from sag_legal.reranking import rerank
 from sag_legal.retrieval.embeddings import embed_chunks
 from sag_legal.retrieval.faiss_index import DenseFaissIndex
@@ -288,6 +289,17 @@ def answer_query(
             voyage_client=voyage_client,
             query_extract_fn=query_extract_fn,
         )
+    refs = resolve_orgs(cleaned)
+    if any(r.needs_clarify for r in refs):
+        return ChatResult(
+            answer=refs[0].clarify_prompt,
+            abstained=True,
+            stats=ChatStats(len(seeds), len(evidence), 0),
+            use_sag=use_sag,
+        )
+    if refs:
+        org_docs = fetch_org_docs(refs[0])
+        evidence = merge_evidence(evidence, org_docs)
 
     seed_ids = {c.chunk_id for c in seeds}
     draft = generate_draft(
