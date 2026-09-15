@@ -201,3 +201,80 @@ def test_answer_query_rag_defaults_to_voyage_plus_extra():
     assert out.use_sag is False
     assert out.stats.seed_count == 2
     assert seen["n"] == 2
+
+
+def test_answer_query_merges_org_docs_for_clear_org():
+    statute = _chunk("luat-tctd", "Điều 1", "Quy định về tổ chức tín dụng.")
+    bundle = _bundle([statute])
+    seen: dict[str, int | list[str]] = {}
+
+    def retrieve(query: str, _bundle: CorpusBundle) -> list[LegalChunk]:
+        return [statute]
+
+    def generate(query: str, evidence: Sequence[LegalChunk]) -> DraftAnswer:
+        seen["n"] = len(evidence)
+        seen["org_ids"] = [c.document_id for c in evidence if c.document_id.startswith("org:")]
+        return DraftAnswer(
+            answer="Draft with org context.",
+            cited_chunk_ids=[statute.chunk_id],
+            abstained=False,
+        )
+
+    out = answer_query(
+        "VietCredit vốn điều lệ?",
+        bundle=bundle,
+        retrieve_fn=retrieve,
+        generate_fn=generate,
+    )
+    assert out.abstained is False
+    assert seen["n"] == 3  # 1 statute + dkkd + dieu_le stubs
+    assert set(seen["org_ids"]) == {"org:VCC:dkkd", "org:VCC:dieu_le"}
+
+
+def test_answer_query_clarify_ambiguous_org():
+    statute = _chunk("luat-tctd", "Điều 1", "Quy định chung.")
+    bundle = _bundle([statute])
+    calls = {"generate": 0}
+
+    def retrieve(query: str, _bundle: CorpusBundle) -> list[LegalChunk]:
+        return [statute]
+
+    def generate(query: str, evidence: Sequence[LegalChunk]) -> DraftAnswer:
+        calls["generate"] += 1
+        return DraftAnswer(answer="should not run", cited_chunk_ids=[], abstained=False)
+
+    out = answer_query(
+        "VietCredit và Waka",
+        bundle=bundle,
+        retrieve_fn=retrieve,
+        generate_fn=generate,
+    )
+    assert out.abstained is True
+    assert "tổ chức nào" in out.answer
+    assert calls["generate"] == 0
+
+
+def test_answer_query_no_org_leaves_evidence_unchanged():
+    statute = _chunk("luat-ke-toan", "Điều 12", "Kỳ kế toán gồm năm.")
+    bundle = _bundle([statute])
+    seen: dict[str, int] = {}
+
+    def retrieve(query: str, _bundle: CorpusBundle) -> list[LegalChunk]:
+        return [statute]
+
+    def generate(query: str, evidence: Sequence[LegalChunk]) -> DraftAnswer:
+        seen["n"] = len(evidence)
+        return DraftAnswer(
+            answer="Statute only.",
+            cited_chunk_ids=[statute.chunk_id],
+            abstained=False,
+        )
+
+    out = answer_query(
+        "kỳ kế toán năm?",
+        bundle=bundle,
+        retrieve_fn=retrieve,
+        generate_fn=generate,
+    )
+    assert out.abstained is False
+    assert seen["n"] == 1
