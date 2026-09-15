@@ -278,3 +278,122 @@ def test_answer_query_no_org_leaves_evidence_unchanged():
     )
     assert out.abstained is False
     assert seen["n"] == 1
+
+
+def test_compare_query_merges_org_docs_both_arms():
+    statute = _chunk("luat-tctd", "Điều 1", "Quy định về tổ chức tín dụng.")
+    from sag_legal.sag import ChunkExtraction, build_index
+
+    bundle = CorpusBundle(
+        chunks=[statute],
+        titles={"luat-tctd": "Luật TCTD"},
+        vectors={},
+        index=build_index([statute]),
+    )
+    seen: dict[str, list[str]] = {"rag": [], "sag": []}
+
+    def generate(query: str, evidence: Sequence[LegalChunk]) -> DraftAnswer:
+        org_ids = [
+            c.document_id for c in evidence if c.document_id.startswith("org:")
+        ]
+        # First call is RAG, second is SAG (compare_query order).
+        if not seen["rag"]:
+            seen["rag"] = org_ids
+        else:
+            seen["sag"] = org_ids
+        return DraftAnswer(
+            answer="ok",
+            cited_chunk_ids=[statute.chunk_id],
+            abstained=False,
+        )
+
+    import sag_legal.chat.pipeline as pipe
+
+    class _Hit:
+        def __init__(self, chunk: LegalChunk) -> None:
+            self.chunk = chunk
+
+    def fake_hybrid(query, corpus, k=20, vectors=None, **_kwargs):
+        return [_Hit(statute)]
+
+    def fake_rerank(query, documents, top_k=None, client=None, model=None):
+        return [_Hit(ch) for ch in documents[:top_k]]
+
+    def fake_query_extract(query: str) -> ChunkExtraction:
+        return ChunkExtraction(chunk_id="query")
+
+    original_hybrid = pipe.search_hybrid
+    original_rerank = pipe.rerank
+    pipe.search_hybrid = fake_hybrid
+    pipe.rerank = fake_rerank
+    try:
+        rag, sag = pipe.compare_query(
+            "VietCredit vốn điều lệ?",
+            bundle=bundle,
+            voyage_k=1,
+            sag_extra=0,
+            rag_k=1,
+            generate_fn=generate,
+            query_extract_fn=fake_query_extract,
+        )
+    finally:
+        pipe.search_hybrid = original_hybrid
+        pipe.rerank = original_rerank
+
+    assert rag.abstained is False
+    assert sag.abstained is False
+    expected = {"org:VCC:dkkd", "org:VCC:dieu_le"}
+    assert set(seen["rag"]) == expected
+    assert set(seen["sag"]) == expected
+
+
+def test_compare_query_clarify_ambiguous_org():
+    statute = _chunk("luat-tctd", "Điều 1", "Quy định chung.")
+    from sag_legal.sag import ChunkExtraction, build_index
+
+    bundle = CorpusBundle(
+        chunks=[statute],
+        titles={"luat-tctd": "Luật TCTD"},
+        vectors={},
+        index=build_index([statute]),
+    )
+    calls = {"generate": 0}
+
+    def generate(query: str, evidence: Sequence[LegalChunk]) -> DraftAnswer:
+        calls["generate"] += 1
+        return DraftAnswer(answer="should not run", cited_chunk_ids=[], abstained=False)
+
+    import sag_legal.chat.pipeline as pipe
+
+    class _Hit:
+        def __init__(self, chunk: LegalChunk) -> None:
+            self.chunk = chunk
+
+    def fake_hybrid(query, corpus, k=20, vectors=None, **_kwargs):
+        return [_Hit(statute)]
+
+    def fake_rerank(query, documents, top_k=None, client=None, model=None):
+        return [_Hit(ch) for ch in documents[:top_k]]
+
+    original_hybrid = pipe.search_hybrid
+    original_rerank = pipe.rerank
+    pipe.search_hybrid = fake_hybrid
+    pipe.rerank = fake_rerank
+    try:
+        rag, sag = pipe.compare_query(
+            "VietCredit và Waka",
+            bundle=bundle,
+            voyage_k=1,
+            sag_extra=0,
+            generate_fn=generate,
+            query_extract_fn=lambda q: ChunkExtraction(chunk_id="query"),
+        )
+    finally:
+        pipe.search_hybrid = original_hybrid
+        pipe.rerank = original_rerank
+
+    assert rag.abstained is True
+    assert sag.abstained is True
+    assert "tổ chức nào" in rag.answer
+    assert rag.answer == sag.answer
+    assert calls["generate"] == 0

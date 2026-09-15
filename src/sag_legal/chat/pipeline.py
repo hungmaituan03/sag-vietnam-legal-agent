@@ -235,6 +235,24 @@ def _default_retrieve(
     return seeds, evidence
 
 
+def _apply_org_evidence(
+    query: str,
+    evidence: list[LegalChunk],
+) -> list[LegalChunk] | str:
+    """Merge org docs into evidence, or return clarify prompt if ambiguous.
+
+    Returns:
+        - ``str`` clarify prompt when multiple orgs match (caller should abstain)
+        - updated ``list[LegalChunk]`` when a clear org hit (or unchanged if none)
+    """
+    refs = resolve_orgs(query)
+    if any(r.needs_clarify for r in refs):
+        return refs[0].clarify_prompt
+    if refs:
+        return merge_evidence(evidence, fetch_org_docs(refs[0]))
+    return evidence
+
+
 def answer_query(
     query: str,
     *,
@@ -289,17 +307,15 @@ def answer_query(
             voyage_client=voyage_client,
             query_extract_fn=query_extract_fn,
         )
-    refs = resolve_orgs(cleaned)
-    if any(r.needs_clarify for r in refs):
+    applied = _apply_org_evidence(cleaned, evidence)
+    if isinstance(applied, str):
         return ChatResult(
-            answer=refs[0].clarify_prompt,
+            answer=applied,
             abstained=True,
             stats=ChatStats(len(seeds), len(evidence), 0),
             use_sag=use_sag,
         )
-    if refs:
-        org_docs = fetch_org_docs(refs[0])
-        evidence = merge_evidence(evidence, org_docs)
+    evidence = applied
 
     seed_ids = {c.chunk_id for c in seeds}
     draft = generate_draft(
@@ -400,20 +416,42 @@ def compare_query(
         min_sim=min_sim,
     )
 
+    # Shared org gate: ambiguous → both arms abstain with the same prompt.
+    org_probe = _apply_org_evidence(cleaned, [])
+    if isinstance(org_probe, str):
+        clarify = ChatResult(
+            answer=org_probe,
+            abstained=True,
+            stats=ChatStats(0, 0, 0),
+            use_sag=False,
+        )
+        return clarify, ChatResult(
+            answer=org_probe,
+            abstained=True,
+            stats=ChatStats(0, 0, 0),
+            use_sag=True,
+        )
+
     def _finish(
         evidence: list[LegalChunk],
         use_sag: bool,
         seed_list: list[LegalChunk],
     ) -> ChatResult:
+        before = len(evidence)
+        applied = _apply_org_evidence(cleaned, evidence)
+        # Clarify already handled above; applied is always a list here.
+        evidence = applied if isinstance(applied, list) else evidence
+        org_extra = len(evidence) - before
         seed_ids = {c.chunk_id for c in seed_list}
         # Same draft budget as the K-matched pack (default 15), not the
         # global DEFAULT_MAX_EVIDENCE=10, so RAG and SAG see equal depth.
+        # Room for appended org docs so they are not truncated away.
         draft = generate_draft(
             cleaned,
             evidence,
             generate_fn=generate_fn,
             seed_ids=seed_ids,
-            max_evidence_chunks=rag_budget,
+            max_evidence_chunks=rag_budget + org_extra,
         )
         by_id = {c.chunk_id: c for c in evidence}
         cite_order = list(draft.cited_chunk_ids)
