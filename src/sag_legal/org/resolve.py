@@ -45,6 +45,16 @@ def _entry_to_ref(org_id, entry, *, needs_clarify, clarify_prompt="") -> OrgRef:
         clarify_prompt=clarify_prompt,
     )
 
+
+def lookup_org(org_id: str, catalog: dict | None = None) -> OrgRef | None:
+    """Return a clear OrgRef for a catalog id, or None if unknown/inactive."""
+    catalog = DEFAULT_CATALOG if catalog is None else catalog
+    entry = catalog.get(org_id)
+    if entry is None or entry.get("status", "active") != "active":
+        return None
+    return _entry_to_ref(org_id, entry, needs_clarify=False)
+
+
 def resolve_orgs(query: str, catalog: dict | None = None) -> list[OrgRef]:
     catalog = DEFAULT_CATALOG if catalog is None else catalog
     q = _normalize(query)

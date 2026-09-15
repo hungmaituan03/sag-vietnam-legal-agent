@@ -251,7 +251,66 @@ def test_answer_query_clarify_ambiguous_org():
     )
     assert out.abstained is True
     assert "tổ chức nào" in out.answer
+    assert out.needs_org_clarify is True
+    assert {c.org_id for c in out.org_candidates} == {"VCC", "WAKA"}
     assert calls["generate"] == 0
+
+
+def test_answer_query_org_id_override_skips_clarify():
+    statute = _chunk("luat-tctd", "Điều 1", "Quy định chung.")
+    bundle = _bundle([statute])
+    seen: dict[str, list[str]] = {}
+
+    def retrieve(query: str, _bundle: CorpusBundle) -> list[LegalChunk]:
+        return [statute]
+
+    def generate(query: str, evidence: Sequence[LegalChunk]) -> DraftAnswer:
+        seen["org_ids"] = [
+            c.document_id for c in evidence if c.document_id.startswith("org:")
+        ]
+        return DraftAnswer(
+            answer="Locked to VCC.",
+            cited_chunk_ids=[statute.chunk_id],
+            abstained=False,
+        )
+
+    out = answer_query(
+        "VietCredit và Waka",
+        bundle=bundle,
+        retrieve_fn=retrieve,
+        generate_fn=generate,
+        org_id="VCC",
+    )
+    assert out.abstained is False
+    assert out.needs_org_clarify is False
+    assert set(seen["org_ids"]) == {"org:VCC:dkkd", "org:VCC:dieu_le"}
+
+
+def test_answer_query_unknown_org_id_leaves_statute_only():
+    statute = _chunk("luat-tctd", "Điều 1", "Quy định chung.")
+    bundle = _bundle([statute])
+    seen: dict[str, int] = {}
+
+    def retrieve(query: str, _bundle: CorpusBundle) -> list[LegalChunk]:
+        return [statute]
+
+    def generate(query: str, evidence: Sequence[LegalChunk]) -> DraftAnswer:
+        seen["n"] = len(evidence)
+        return DraftAnswer(
+            answer="No org docs.",
+            cited_chunk_ids=[statute.chunk_id],
+            abstained=False,
+        )
+
+    out = answer_query(
+        "VietCredit và Waka",
+        bundle=bundle,
+        retrieve_fn=retrieve,
+        generate_fn=generate,
+        org_id="NOPE",
+    )
+    assert out.abstained is False
+    assert seen["n"] == 1
 
 
 def test_answer_query_no_org_leaves_evidence_unchanged():
@@ -396,4 +455,6 @@ def test_compare_query_clarify_ambiguous_org():
     assert sag.abstained is True
     assert "tổ chức nào" in rag.answer
     assert rag.answer == sag.answer
+    assert rag.needs_org_clarify is True
+    assert {c.org_id for c in rag.org_candidates} == {"VCC", "WAKA"}
     assert calls["generate"] == 0
