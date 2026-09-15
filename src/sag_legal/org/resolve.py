@@ -9,43 +9,52 @@ class OrgRef:
     display_name: str
     aliases: list[str]
     org_type: str
-    mst: str | None = None 
-    needs_clarify: bool = False 
-    clarify_prompt: str = ""
+    mst: str | None = None
 
+
+# Study fixture: one fake TCTD only (Company A / Alpha Finance).
 DEFAULT_CATALOG: dict[str, dict] = {
-    "VCC": {
-        "canonical_name": "Công ty Tài chính Cổ phần Tín Việt",
-        "aliases": ["VietCredit", "Tín Việt", "VCC"],
+    "COA": {
+        "canonical_name": "Công ty Tài chính TNHH Một thành viên Alpha",
+        "aliases": [
+            "Company A",
+            "Công ty A",
+            "Alpha Finance",
+            "Alpha",
+            "COA",
+        ],
         "entity_type": "financial_company",
-        "tax_id": None,
-        "status": "active",
-    },
-
-    "WAKA": {
-        "canonical_name": "Công ty Cổ phần Sách điện tử Waka",
-        "aliases": ["Waka", "Sách điện tử Waka", "WAKA"],
-        "entity_type": "ebook_company",
-        "tax_id": "0108796796",
+        "tax_id": "0199999999",
         "status": "active",
     },
 }
 
-def _normalize(text):
+
+def _normalize(text: str) -> str:
     return text.lower().strip()
 
-def _entry_to_ref(org_id, entry, *, needs_clarify, clarify_prompt="") -> OrgRef:
+
+def _entry_to_ref(org_id: str, entry: dict) -> OrgRef:
     return OrgRef(
         org_id=org_id,
         display_name=entry["canonical_name"],
         aliases=list(entry.get("aliases") or []),
         org_type=entry["entity_type"],
         mst=entry.get("tax_id"),
-        needs_clarify=needs_clarify,
-        clarify_prompt=clarify_prompt,
     )
 
+
+def lookup_org(org_id: str, catalog: dict | None = None) -> OrgRef | None:
+    """Return OrgRef for a catalog id, or None if unknown/inactive."""
+    catalog = DEFAULT_CATALOG if catalog is None else catalog
+    entry = catalog.get(org_id)
+    if entry is None or entry.get("status", "active") != "active":
+        return None
+    return _entry_to_ref(org_id, entry)
+
+
 def resolve_orgs(query: str, catalog: dict | None = None) -> list[OrgRef]:
+    """Match org aliases in the query. At most one clear hit (COA-only catalog)."""
     catalog = DEFAULT_CATALOG if catalog is None else catalog
     q = _normalize(query)
     hits: list[str] = []
@@ -56,19 +65,12 @@ def resolve_orgs(query: str, catalog: dict | None = None) -> list[OrgRef]:
         names = [entry["canonical_name"], *entry.get("aliases", [])]
         for name in names:
             n = _normalize(name)
-            if len(n) >= 2 and n in q: 
+            if len(n) >= 2 and n in q:
                 hits.append(org_id)
                 break
-        
-    if not hits: 
-        return []
-    if len(hits) == 1:
-        oid = hits[0]
-        return [_entry_to_ref(oid, catalog[oid], needs_clarify=False)]
 
-    names = [catalog[oid]["canonical_name"] for oid in hits]
-    prompt = "Bạn đang hỏi về tổ chức nào: " + "; ".join(names) + "?"
-    return [
-        _entry_to_ref(oid, catalog[oid], needs_clarify=True, clarify_prompt=prompt)
-        for oid in hits
-    ]
+    if not hits:
+        return []
+    # Single-org study scope: take the first match; no clarify path.
+    oid = hits[0]
+    return [_entry_to_ref(oid, catalog[oid])]
